@@ -8,13 +8,13 @@ Super Ralph receives a user query, decomposes it into independent tasks, and dis
 
 ```
 User Query
-  -> Pre-Flight: scope workspace (what to touch, what to read, what's off-limits)
+  -> Pre-Flight: scope workspace + set max retries per task
   -> Planner: decompose into tasks with high quality standards
   -> Per Task (parallel if independent):
       -> Test Agent: write strict tests first
       -> Worker Agent: implement until tests pass
-      -> Fail 3x? -> debug.md -> Debug Agent -> fresh Worker
-      -> Fail 6x? -> auto-skip + log to learnings
+      -> Fail halfway? -> debug.md -> Debug Agent -> fresh Worker
+      -> Hit max retries? -> auto-skip + log to learnings
       -> Pass -> capture learnings, clear debug.md
   -> Merger: combine all outputs + summary report
 ```
@@ -48,12 +48,13 @@ Before every new run, the Planner reads `learnings.md` to avoid repeating past m
 
 ## Self-Debugging
 
-When a worker fails 3 times:
-1. Worker writes `debug.md` — full reasoning trail for all 3 attempts
+When a worker hits the halfway mark of max retries:
+1. Worker writes `debug.md` — full reasoning trail for all attempts so far
 2. Fresh Debug Agent reads it cold (no bias, no sunk cost)
 3. Debug Agent identifies root cause and writes a concrete fix plan
 4. Fresh Worker follows the fix plan exactly
 5. On success: learnings captured, `debug.md` cleared
+6. On max retries: auto-skipped, failure logged to learnings
 
 ## Install
 

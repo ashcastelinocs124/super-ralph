@@ -11,13 +11,13 @@ Autonomous agentic loop: decompose → test → build → debug → learn → me
 
 ```
 User Query
-  → Pre-Flight: scope workspace (AskUserQuestion)
+  → Pre-Flight: scope workspace + set MAX_RETRIES (AskUserQuestion)
   → ralph-planner: decompose into tasks with high quality bar (reads learnings.md)
   → Per Task (parallel if independent):
       → ralph-tester: write strict tests
       → ralph-worker: implement until tests pass
-      → Fail 3x? → debug.md → ralph-debugger → fresh ralph-worker
-      → Fail 6x? → auto-skip + log to learnings
+      → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → fresh ralph-worker
+      → Fail MAX_RETRIES? → auto-skip + log to learnings
       → Pass → capture learnings, clear debug.md
   → ralph-merger: combine outputs + summary report
 ```
@@ -80,6 +80,22 @@ options:
 multiSelect: false
 ```
 
+**Question 4 — Retry limit per task:**
+```
+question: "How many retries per task before giving up?"
+header: "Max retries"
+options:
+  - label: "6 (default)"
+    description: "3 normal attempts + debug analysis + 3 more attempts"
+  - label: "4"
+    description: "2 normal attempts + debug analysis + 2 more attempts"
+  - label: "10"
+    description: "5 normal attempts + debug analysis + 5 more attempts"
+multiSelect: false
+```
+
+Store the retry limit as `MAX_RETRIES`. The debug trigger fires at `MAX_RETRIES / 2` (halfway). After `MAX_RETRIES` total attempts, auto-skip.
+
 Store the answers as `WORKSPACE_RULES` — inject into every sub-agent prompt:
 
 ```
@@ -122,6 +138,7 @@ Tester writes tests to `workspace/task-{id}/tests/` and reports the test command
 
 ```
 attempt = 0
+debug_trigger = MAX_RETRIES / 2   # e.g. 3 if MAX_RETRIES=6
 
 while true:
     attempt += 1
@@ -131,8 +148,8 @@ while true:
     else:
         failure_context = "PREVIOUS ATTEMPT FAILED:\n{last_test_output}\n\nFix the root cause."
 
-    if attempt == 3:
-        Add to prompt: "This is attempt 3. You MUST write debug.md before exiting."
+    if attempt == debug_trigger:
+        Add to prompt: "This is attempt {debug_trigger}. You MUST write debug.md before exiting."
 
     Dispatch fresh ralph-worker with:
       task definition + test locations + failure_context + WORKSPACE_RULES
@@ -142,8 +159,11 @@ while true:
     if tests pass:
         break → Phase 2d (capture learnings)
 
-    if attempt == 3 and tests still fail:
+    if attempt == debug_trigger and tests still fail:
         enter Phase 2c (self-debugging)
+
+    if attempt >= MAX_RETRIES:
+        enter Phase 2c Step 4 (auto-skip)
 ```
 
 ### Step 2c: Validator
@@ -154,27 +174,27 @@ Run tests via Bash after each worker attempt:
 
 ---
 
-## Phase 2c: Self-Debugging (after 3 failed attempts)
+## Phase 2c: Self-Debugging (after MAX_RETRIES/2 failed attempts)
 
 ### Step 1: debug.md already written
-The 3rd ralph-worker writes `debug.md` with all 3 attempts, reasoning, and pattern analysis.
+The worker at attempt `MAX_RETRIES/2` writes `debug.md` with all attempts so far, reasoning, and pattern analysis.
 
 ### Step 2: Fresh Debug Agent
 Dispatch **ralph-debugger** — reads debug.md cold, identifies root cause, appends fix plan.
 
 ### Step 3: Fresh Worker follows fix plan
-Dispatch fresh **ralph-worker** (attempts 4-6) with debug.md. Worker follows the fix plan exactly.
+Dispatch fresh **ralph-worker** (attempts `MAX_RETRIES/2 + 1` through `MAX_RETRIES`) with debug.md. Worker follows the fix plan exactly.
 
 Run tests again:
 - **Pass** → capture learnings + clear debug.md
-- **Fail after attempt 6** → auto-skip (Step 4)
+- **Fail after attempt MAX_RETRIES** → auto-skip (Step 4)
 
-### Step 4: Auto-Skip (attempt 6 still failing)
+### Step 4: Auto-Skip (MAX_RETRIES reached, still failing)
 
 **Do NOT ask the user.** The loop is fully autonomous after pre-flight.
 
 1. Mark the task as **FAILED**
-2. Log the full failure trail to `learnings.md` (all 6 attempts, debug analysis, what was tried)
+2. Log the full failure trail to `learnings.md` (all attempts, debug analysis, what was tried)
 3. Continue with remaining tasks — do not stop the loop
 4. The merger will note skipped tasks in the final summary report
 
