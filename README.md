@@ -14,7 +14,7 @@ User Query
       -> Test Agent: write strict tests first
       -> Worker Agent: implement until tests pass
       -> Fail 3x? -> debug.md -> Debug Agent -> fresh Worker
-      -> Fail 6x? -> ask user
+      -> Fail 6x? -> auto-skip + log to learnings
       -> Pass -> capture learnings, clear debug.md
   -> Merger: combine all outputs + summary report
 ```

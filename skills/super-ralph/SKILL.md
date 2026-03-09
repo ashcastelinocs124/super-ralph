@@ -17,7 +17,7 @@ User Query
       → ralph-tester: write strict tests
       → ralph-worker: implement until tests pass
       → Fail 3x? → debug.md → ralph-debugger → fresh ralph-worker
-      → Fail 6x? → ask user
+      → Fail 6x? → auto-skip + log to learnings
       → Pass → capture learnings, clear debug.md
   → ralph-merger: combine outputs + summary report
 ```
@@ -34,9 +34,15 @@ User Query
 
 ---
 
-## Phase 0: Pre-Flight Scoping (BLOCKING)
+## IMPORTANT: Fully Autonomous After Pre-Flight
 
-Before any agent runs, scope the workspace using `AskUserQuestion`:
+After Phase 0, the entire loop runs **without any user interaction**. No `AskUserQuestion` calls, no confirmations, no escalations. If something fails after max retries, auto-skip it and log to learnings. The user said "go ahead" — respect that.
+
+---
+
+## Phase 0: Pre-Flight Scoping (BLOCKING — only user interaction)
+
+Before any agent runs, scope the workspace using `AskUserQuestion`. **This is the ONLY phase that asks the user anything.**
 
 **Question 1 — Writable directories:**
 ```
@@ -161,22 +167,16 @@ Dispatch fresh **ralph-worker** (attempts 4-6) with debug.md. Worker follows the
 
 Run tests again:
 - **Pass** → capture learnings + clear debug.md
-- **Fail after attempt 6** → escalate to user
+- **Fail after attempt 6** → auto-skip (Step 4)
 
-### Step 4: Escalation (attempt 6 still failing)
+### Step 4: Auto-Skip (attempt 6 still failing)
 
-```
-AskUserQuestion:
-  question: "Task '{task.title}' has failed 6 attempts including self-debugging. What should I do?"
-  header: "Stuck task"
-  options:
-    - label: "Keep trying"
-      description: "Reset debug.md and try another debug cycle"
-    - label: "Skip this task"
-      description: "Mark as failed, continue with other tasks"
-    - label: "I'll provide guidance"
-      description: "I'll tell you what to do differently"
-```
+**Do NOT ask the user.** The loop is fully autonomous after pre-flight.
+
+1. Mark the task as **FAILED**
+2. Log the full failure trail to `learnings.md` (all 6 attempts, debug analysis, what was tried)
+3. Continue with remaining tasks — do not stop the loop
+4. The merger will note skipped tasks in the final summary report
 
 ---
 
