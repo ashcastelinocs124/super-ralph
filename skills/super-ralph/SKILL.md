@@ -18,8 +18,8 @@ User Query
       → ralph-worker: implement until tests pass
       → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → fresh ralph-worker
       → Fail MAX_RETRIES? → auto-skip + log to learnings
-      → Pass → capture learnings, clear debug.md
-  → ralph-merger: combine outputs + summary report
+      → Pass → clear debug.md
+  → ralph-merger: combine outputs + write consolidated learnings entry + summary report
 ```
 
 ## Agents
@@ -157,7 +157,7 @@ while true:
     Run tests via Bash: {test_command}
 
     if tests pass:
-        break → Phase 2d (capture learnings)
+        break → clear debug.md if it exists
 
     if attempt == debug_trigger and tests still fail:
         enter Phase 2c (self-debugging)
@@ -169,7 +169,7 @@ while true:
 ### Step 2c: Validator
 
 Run tests via Bash after each worker attempt:
-- **Pass** → Phase 2d (capture learnings)
+- **Pass** → clear debug.md, continue to next task
 - **Fail** → retry worker with failure output
 
 ---
@@ -186,7 +186,7 @@ Dispatch **ralph-debugger** — reads debug.md cold, identifies root cause, appe
 Dispatch fresh **ralph-worker** (attempts `MAX_RETRIES/2 + 1` through `MAX_RETRIES`) with debug.md. Worker follows the fix plan exactly.
 
 Run tests again:
-- **Pass** → capture learnings + clear debug.md
+- **Pass** → clear debug.md, continue to next task
 - **Fail after attempt MAX_RETRIES** → auto-skip (Step 4)
 
 ### Step 4: Auto-Skip (MAX_RETRIES reached, still failing)
@@ -194,48 +194,59 @@ Run tests again:
 **Do NOT ask the user.** The loop is fully autonomous after pre-flight.
 
 1. Mark the task as **FAILED**
-2. Log the full failure trail to `learnings.md` (all attempts, debug analysis, what was tried)
+2. Keep the task's failure trail (attempts, debug analysis) in memory for the merger
 3. Continue with remaining tasks — do not stop the loop
-4. The merger will note skipped tasks in the final summary report
 
 ---
 
-## Phase 2d: Capture Learnings
+## Phase 3: Merge, Learn & Deliver
 
-After each task completes (pass or fail), append to `learnings.md`:
+After ALL tasks complete, dispatch **ralph-merger** with:
+- All task titles, statuses, attempt counts, and output directories
+- Per-task notes: what worked, what failed, debug insights (passed in prompt, not in learnings.md)
+- WORKSPACE_RULES
+
+### Step 3a: Merge outputs
+
+Merger combines outputs into `workspace/final/`, resolves integration issues.
+
+### Step 3b: Write ONE consolidated learnings entry
+
+The merger synthesizes all per-task insights into **a single entry** appended to `learnings.md`:
 
 ```markdown
-## {date} — {task.title}
+## {date} — {original user query (shortened)}
 
-**Query:** {original user query}
-**Task:** {task.description}
-**Result:** {pass/fail}
-**Attempts:** {attempt_count}
+**Result:** {passed}/{total} tasks passed ({total_attempts} total attempts)
 
-### What worked
-- {approach that succeeded}
+### Key Learnings
+- {insight that transfers to future runs — from any task}
+- {another generalizable insight}
+- {root cause from debug sessions, if any}
 
-### What failed
-- {approach that failed and why — for each failed attempt}
+### Patterns to Reuse
+- {architectural pattern that worked well}
+- {library/tool choice that proved effective}
 
-### Patterns
-- {reusable insight for future runs}
+### Anti-Patterns to Avoid
+- {approach that failed and why — only if it's a trap others would fall into}
 ```
 
-**If debug mode was used and succeeded:**
-1. Extract the root cause and fix from debug.md → include in "What failed" and "Patterns"
-2. **Clear debug.md** — write it back to just: `_Empty — ready for next debug session._`
+**Rules for this entry:**
+- Only include insights that would help a **different future query** — skip task-specific noise
+- If debug mode was used, extract the root cause as a learning (the shared wrong assumption)
+- Keep it concise — aim for 5-15 bullet points total, not a wall of text
+- Task-specific details (individual attempt logs, test output) stay in the summary report only
+
+### Step 3c: Clear debug.md
+
+If debug.md was used during the run, clear it:
+```
+_Empty — ready for next debug session._
+```
 
 debug.md is a scratch pad. learnings.md is the permanent record.
 
----
+### Step 3d: Summary report
 
-## Phase 3: Merge & Deliver
-
-After ALL tasks complete, dispatch **ralph-merger** with:
-- All task titles, statuses, and output directories
-- WORKSPACE_RULES
-
-Merger combines outputs into `workspace/final/`, resolves integration issues, and produces a summary report.
-
-Present the summary to the user. The merged output in `workspace/final/` is the deliverable.
+Produce the summary report and present it to the user. The merged output in `workspace/final/` is the deliverable.

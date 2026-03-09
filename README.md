@@ -141,7 +141,7 @@ The debugger appends a concrete, step-by-step fix plan to `debug.md`:
 
 **Step 4 -- Fresh worker follows the plan exactly**
 
-A new worker gets `debug.md` and follows the fix plan. If this succeeds, learnings are captured and `debug.md` is cleared. If it still fails after `MAX_RETRIES`, the task is auto-skipped and the failure trail is logged to `learnings.md`.
+A new worker gets `debug.md` and follows the fix plan. If this succeeds, `debug.md` is cleared. If it still fails after `MAX_RETRIES`, the task is auto-skipped.
 
 ---
 
@@ -151,33 +151,43 @@ Two files with different purposes:
 
 | File | Purpose | Lifecycle |
 |------|---------|-----------|
-| `debug.md` | Scratch pad for active debugging | Written during debug, cleared after resolution |
-| `learnings.md` | Permanent memory across runs | Append-only, read by planner before every run |
+| `debug.md` | Scratch pad for active debugging | Written during debug, cleared after every run |
+| `learnings.md` | Permanent memory across runs | One entry per query, read by planner before every run |
 
-After every task (pass or fail), Super Ralph appends to `learnings.md`:
+### One entry per query, not per task
 
-```markdown
-## 2026-03-07 -- JWT Authentication
+After all tasks complete, the merger synthesizes everything into **a single consolidated entry** in `learnings.md`. Per-task details stay in the summary report — only generalizable insights make it into the permanent record.
 
-**Query:** Build a REST API with auth and rate limiting
-**Task:** Implement JWT token generation and validation
-**Result:** pass
-**Attempts:** 4
-
-### What worked
-- Used python-jose library with HS256 algorithm
-- Separated token generation from validation logic
-
-### What failed
-- Attempt 1: Used PyJWT but wrong import path for decode options
-- Attempt 2: Token expiry was set in seconds instead of datetime
-
-### Patterns
-- Always check library-specific parameter names for decode/verify
-- Use datetime.utcnow() not datetime.now() for token timestamps
+**Before (per-task -- cluttered):**
+```
+## 2026-03-07 -- Task 1: Auth endpoint
+...12 lines...
+## 2026-03-07 -- Task 2: Rate limiter
+...12 lines...
+## 2026-03-07 -- Task 3: Database schema
+...12 lines...
 ```
 
-The planner reads this before every new run. Over time, Super Ralph avoids past mistakes and reuses successful patterns.
+**After (per-query -- clean):**
+```markdown
+## 2026-03-07 -- REST API with auth and rate limiting
+
+**Result:** 3/3 tasks passed (7 total attempts)
+
+### Key Learnings
+- python-jose expects different decode params than PyJWT -- check library docs first
+- Rate limiting with Redis sorted sets is cleaner than sliding window counters
+- Always set token expiry with UTC timestamps, not local time
+
+### Patterns to Reuse
+- Separate middleware concerns (auth vs rate limiting) into independent decorators
+- Write integration tests that hit the full request lifecycle, not just unit tests
+
+### Anti-Patterns to Avoid
+- Don't use datetime.now() for JWT timestamps -- always UTC
+```
+
+The planner reads `learnings.md` before every new run. Over time, Super Ralph builds a lean, high-signal knowledge base -- not a wall of per-task noise.
 
 ---
 
