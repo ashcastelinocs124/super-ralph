@@ -11,8 +11,9 @@ Autonomous agentic loop: decompose → test → build → debug → learn → me
 
 ```
 User Query
+  → Brainstorm: interactive Q&A to explore intent, scope, edge cases (AskUserQuestion loop)
   → Pre-Flight: scope workspace + set MAX_RETRIES (AskUserQuestion)
-  → ralph-planner: decompose into tasks with high quality bar (reads learnings.md)
+  → ralph-planner: decompose into tasks with high quality bar (reads learnings.md + brainstorm summary)
   → Per Task (parallel if independent):
       → ralph-tester: write strict tests
       → ralph-worker: implement until tests pass
@@ -40,7 +41,95 @@ After Phase 0, the entire loop runs **without any user interaction**. No `AskUse
 
 ---
 
-## Phase 0: Pre-Flight Scoping (BLOCKING — only user interaction)
+## Phase -1: Brainstorm (BLOCKING — interactive Q&A before anything else)
+
+Before scoping the workspace or planning tasks, **explore the user's idea through conversation**. The goal is to deeply understand what the user actually wants — not just what they typed.
+
+**This phase is interactive.** Use `AskUserQuestion` in a loop until both sides are aligned.
+
+### How it works
+
+1. **Restate the query** — show the user your understanding of what they're asking for in 2-3 sentences. This surfaces misunderstandings early.
+
+2. **Ask clarifying questions** — use `AskUserQuestion` to explore:
+
+```
+question: "[Specific question about the user's intent, scope, or approach]"
+header: "Clarify"
+options:
+  - label: "[Most likely answer]"
+    description: "[What this means for the build]"
+  - label: "[Alternative interpretation]"
+    description: "[What this means for the build]"
+  - label: "[Simpler/narrower version]"
+    description: "[What this means for the build]"
+multiSelect: false
+```
+
+3. **Explore iteratively** — after each answer, ask follow-up questions if new ambiguities surface. Cover these areas:
+
+| Area | Example Questions |
+|------|-------------------|
+| **Intent** | "Is this a prototype or production-grade?" |
+| **Scope** | "Should this include X, or is that out of scope?" |
+| **Edge cases** | "What should happen when Y occurs?" |
+| **Users** | "Who will use this — just you, your team, or end users?" |
+| **Constraints** | "Any specific tech stack, libraries, or patterns to use/avoid?" |
+| **Existing work** | "Is this building on something that already exists, or greenfield?" |
+
+4. **Produce a brainstorm summary** — when you have enough clarity, write a summary:
+
+```markdown
+## Brainstorm Summary
+
+**Query:** {original user query}
+**Intent:** {what the user actually wants, in your words}
+
+### Scope
+- {what's in scope}
+- {what's explicitly out of scope}
+
+### Key Decisions
+- {decision 1 from the Q&A}
+- {decision 2 from the Q&A}
+
+### Edge Cases Discussed
+- {edge case and agreed handling}
+
+### Constraints
+- {any tech/approach constraints from the user}
+```
+
+5. **Confirm the summary** — show the summary to the user with one final `AskUserQuestion`:
+
+```
+question: "Here's what I'll build. Does this capture it?"
+header: "Confirm"
+options:
+  - label: "Yes, go ahead"
+    description: "This is right — proceed to workspace setup and autonomous execution"
+  - label: "Almost — let me adjust"
+    description: "I'll clarify what needs changing"
+multiSelect: false
+```
+
+If "Almost" → incorporate feedback, update summary, re-confirm. If "Yes" → store the summary as `BRAINSTORM_SUMMARY` and proceed to Phase 0.
+
+### Rules
+
+- Ask **2-5 questions total** — enough to remove ambiguity, not so many it feels like an interrogation
+- Batch related questions into a single `AskUserQuestion` when possible (up to 4 per call)
+- Don't ask questions the user already answered in their original query
+- Don't ask about workspace scope here — that's Phase 0's job
+- If the query is dead simple and unambiguous (e.g., "add a .gitignore"), skip brainstorming entirely
+
+### Passing the summary forward
+
+The `BRAINSTORM_SUMMARY` is injected into the **ralph-planner** prompt alongside learnings and workspace rules. This ensures the planner decomposes based on the *explored, confirmed intent* — not just the raw query.
+
+---
+
+## Phase 0: Pre-Flight Scoping (BLOCKING — second user interaction)
 
 Before any agent runs, scope the workspace using `AskUserQuestion`. **This is the ONLY phase that asks the user anything.**
 
@@ -112,7 +201,7 @@ WORKSPACE RULES:
 
 1. Read `learnings.md` from the super-ralph skill directory
 2. Read the scoped codebase files
-3. Dispatch **ralph-planner** with: user query + learnings + codebase context + WORKSPACE_RULES
+3. Dispatch **ralph-planner** with: user query + BRAINSTORM_SUMMARY + learnings + codebase context + WORKSPACE_RULES
 4. Parse the JSON task array output
 5. Create workspace directories:
 

@@ -8,6 +8,7 @@ Autonomous agentic loop plugin for Claude Code. Give it a query, answer 4 setup 
 You: "/super-ralph build me a REST API with auth and rate limiting"
 
 Super Ralph:
+  0. Brainstorm ── interactive Q&A to explore your intent, scope, and edge cases
   1. Pre-Flight ── asks 4 setup questions (workspace scope + retry limit)
   2. Plan       ── decomposes query into independent tasks with high quality bar
   3. Per Task   ── test agent writes strict tests → worker implements → tests validate
@@ -17,7 +18,7 @@ Super Ralph:
   7. Deliver    ── summary report + merged output in workspace/final/
 ```
 
-After pre-flight, the entire loop runs **fully autonomously** with zero user interaction. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
+After brainstorming and pre-flight, the entire loop runs **fully autonomously** with zero user interaction. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
 
 ---
 
@@ -27,8 +28,9 @@ After pre-flight, the entire loop runs **fully autonomously** with zero user int
 
 ```
 User Query
-  -> Pre-Flight: scope workspace + set MAX_RETRIES (only user interaction)
-  -> ralph-planner: decompose into tasks (reads learnings.md first)
+  -> Brainstorm: interactive Q&A with user (explore intent, scope, edge cases)
+  -> Pre-Flight: scope workspace + set MAX_RETRIES
+  -> ralph-planner: decompose into tasks (reads learnings.md + brainstorm summary)
   -> Per Task (parallel if independent):
       -> ralph-tester: write strict tests before any code exists
       -> ralph-worker: implement until tests pass
@@ -55,9 +57,22 @@ Super Ralph uses 5 specialized sub-agents, each dispatched as a fresh process wi
 
 ---
 
+## Brainstorming
+
+Before anything else, Super Ralph explores your idea through interactive Q&A:
+
+1. **Restates your query** -- shows its understanding so you can catch misunderstandings early
+2. **Asks clarifying questions** -- intent, scope, edge cases, constraints, users (2-5 questions)
+3. **Produces a summary** -- captures the confirmed intent, scope, key decisions, and constraints
+4. **You confirm** -- "yes, go ahead" or "let me adjust"
+
+The brainstorm summary feeds directly into the planner, so tasks are decomposed based on *explored, confirmed intent* -- not just the raw query. If the query is dead simple, brainstorming is skipped.
+
+---
+
 ## Pre-Flight Setup
 
-When you invoke Super Ralph, it asks exactly 4 questions before running autonomously:
+After brainstorming, Super Ralph asks exactly 4 questions to scope the workspace:
 
 **1. Writable directories** -- Where should it create and modify files?
 - Current directory (default)
@@ -77,7 +92,7 @@ When you invoke Super Ralph, it asks exactly 4 questions before running autonomo
 - 10 (5 normal + debug + 5 more)
 - Or type any number
 
-These answers become `WORKSPACE_RULES` injected into every sub-agent prompt. After this, the loop runs without asking anything else.
+These answers become `WORKSPACE_RULES` injected into every sub-agent prompt. After brainstorming and pre-flight, the loop runs without asking anything else.
 
 ---
 
@@ -264,7 +279,8 @@ super-ralph/
 - **Test-first** -- tests are written before implementation. They define "done," not the worker's opinion.
 - **Adversarial quality** -- anti-patterns in task definitions prevent common lazy shortcuts before they happen.
 - **Cold debugging** -- the debugger has zero context from failed attempts. That's its superpower -- no bias.
-- **One-shot autonomy** -- after 4 setup questions, zero user interaction. Failed tasks are auto-skipped, not escalated.
+- **Brainstorm first** -- interactive Q&A explores intent, scope, and edge cases before any autonomous work begins.
+- **One-shot autonomy** -- after brainstorming and 4 setup questions, zero user interaction. Failed tasks are auto-skipped, not escalated.
 - **Persistent learning** -- `learnings.md` accumulates insights across runs. The planner reads it every time.
 - **Configurable retry depth** -- you control how many attempts per task. Debug triggers at the halfway point.
 
