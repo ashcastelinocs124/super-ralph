@@ -12,11 +12,12 @@ Autonomous agentic loop: decompose → test → build → debug → learn → me
 ```
 User Query
   → Brainstorm: interactive Q&A to explore intent, scope, edge cases (AskUserQuestion loop)
+  → Tooling: scan available skills/agents, ask user about goals, assemble custom toolset
   → Pre-Flight: scope workspace + set MAX_RETRIES (AskUserQuestion)
-  → ralph-planner: decompose into tasks with high quality bar (reads learnings.md + brainstorm summary)
-  → Per Task (parallel if independent):
+  → Decompose: orchestrator breaks query into tasks directly (no separate planner agent)
+  → Per Task (sequential, foreground — never run agents in background):
       → ralph-tester: write strict tests
-      → ralph-worker: implement until tests pass
+      → ralph-worker: implement until tests pass (with selected skills/agents available)
       → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → fresh ralph-worker
       → Fail MAX_RETRIES? → auto-skip + log to learnings
       → Pass → clear debug.md
@@ -27,11 +28,12 @@ User Query
 
 | Agent | File | Role |
 |-------|------|------|
-| ralph-planner | `agents/ralph-planner.md` | Decomposes query into tasks with high quality bar |
 | ralph-tester | `agents/ralph-tester.md` | Writes strict tests before implementation |
 | ralph-worker | `agents/ralph-worker.md` | Implements until tests pass, writes debug.md on attempt 3 |
 | ralph-debugger | `agents/ralph-debugger.md` | Cold analysis of failures, writes fix plan |
 | ralph-merger | `agents/ralph-merger.md` | Combines outputs into cohesive deliverable |
+
+**Note:** Planning/decomposition is handled directly by the orchestrator (this skill), not a separate agent. The orchestrator already has the brainstorm summary, tooling config, learnings, and codebase context — no need to dispatch a separate planner.
 
 ---
 
@@ -125,11 +127,133 @@ If "Almost" → incorporate feedback, update summary, re-confirm. If "Yes" → s
 
 ### Passing the summary forward
 
-The `BRAINSTORM_SUMMARY` is injected into the **ralph-planner** prompt alongside learnings and workspace rules. This ensures the planner decomposes based on the *explored, confirmed intent* — not just the raw query.
+The `BRAINSTORM_SUMMARY` is used by the orchestrator during task decomposition (Phase 1) alongside learnings, tooling config, and workspace rules. This ensures tasks are decomposed based on the *explored, confirmed intent* — not just the raw query.
 
 ---
 
-## Phase 0: Pre-Flight Scoping (BLOCKING — second user interaction)
+## Phase -0.5: Tooling Discovery (BLOCKING — after brainstorm, before pre-flight)
+
+After understanding *what* the user wants to build, figure out *what tools will help build it*. Scan available skills and agents, match them to the user's goals, and let the user confirm or adjust the toolset.
+
+### How it works
+
+#### Step 1: Scan available skills and agents
+
+Search for all available skills and agents in the environment:
+
+```bash
+# Scan for skills
+find ~/.claude/skills/ -name "SKILL.md" 2>/dev/null
+find .claude/skills/ -name "SKILL.md" 2>/dev/null
+
+# Scan for agents
+find ~/.claude/agents/ -name "*.md" 2>/dev/null
+find .claude/agents/ -name "*.md" 2>/dev/null
+
+# Also check for project-local skills
+find . -path "*/.claude/skills/*/SKILL.md" 2>/dev/null
+```
+
+Read the `name` and `description` fields from each discovered skill/agent file. Build an inventory:
+
+```
+AVAILABLE_SKILLS:
+- frontend-design: Create distinctive, production-grade frontend interfaces
+- system-arch: Plan major architecture changes and evaluate patterns
+- claude-api: Build apps with the Claude API or Anthropic SDK
+- doc-search: Search third-party API documentation before writing code
+- ...
+
+AVAILABLE_AGENTS:
+- code-reviewer: Validate work against plan and coding standards
+- root-cause-hunter: Drive root-cause analysis for failures
+- integration-test-validator: Comprehensive testing validation
+- ...
+```
+
+#### Step 2: Match tools to the user's goals
+
+Based on the `BRAINSTORM_SUMMARY`, identify which skills and agents would be useful. Consider:
+
+| User's Goal | Relevant Tools |
+|------------|----------------|
+| Building a frontend/UI | `frontend-design`, `landing-page` |
+| API development | `doc-search`, `claude-api`, `system-arch` |
+| Complex architecture | `system-arch`, `validation`, `debate` |
+| Refactoring | `code-reviewer`, `integration-test-validator` |
+| Using third-party APIs | `doc-search` (auto-fetch docs before coding) |
+| Full-stack app | `frontend-design`, `system-arch`, `doc-search` |
+
+#### Step 3: Present recommendations to user
+
+Show the matched tools and let the user select which to activate for this run:
+
+```
+question: "Based on what you're building, these skills/agents could help. Which should I use during this run?"
+header: "Tooling"
+options:
+  - label: "[Recommended set]"
+    description: "Use {skill-1}, {skill-2}, {agent-1} — covers {reason}"
+  - label: "All available"
+    description: "Activate everything — I'll use whatever helps"
+  - label: "Just the defaults"
+    description: "Only use Ralph's 5 built-in agents, no extra skills"
+multiSelect: false
+```
+
+If the user picks "Recommended set" or "All available", also ask if there are specific tools they want to add or exclude:
+
+```
+question: "Anything to add or exclude from the toolset?"
+header: "Adjust"
+options:
+  - label: "Looks good — proceed"
+    description: "Use the selected toolset as-is"
+  - label: "Add a skill"
+    description: "I'll name a specific skill or capability to include"
+  - label: "Remove something"
+    description: "I'll say what to exclude"
+multiSelect: false
+```
+
+#### Step 4: Build TOOLING_CONFIG
+
+Store the selected toolset as `TOOLING_CONFIG`:
+
+```markdown
+## Tooling Config
+
+### Active Skills
+- {skill-name}: {how it will be used in this run}
+- {skill-name}: {how it will be used in this run}
+
+### Active Agents (beyond Ralph defaults)
+- {agent-name}: {when to invoke during the run}
+
+### Skill Integration Rules
+- {skill-name} → invoke before {phase/step} (e.g., "doc-search → invoke before ralph-worker writes API calls")
+- {skill-name} → invoke during {phase/step} (e.g., "frontend-design → invoke when ralph-worker builds UI components")
+```
+
+### How TOOLING_CONFIG is used
+
+The config is used by the orchestrator and injected into sub-agent prompts:
+
+- **Orchestrator** uses `TOOLING_CONFIG` during task decomposition to tag tasks with `skills_to_use` (e.g., "Use `doc-search` to check the Stripe API before implementing payment logic")
+- **ralph-worker** gets the skill integration rules so it knows when to invoke skills during implementation (e.g., invoke `frontend-design` before building a component, invoke `doc-search` before calling a third-party API)
+- **ralph-merger** gets the list so it can note which tools were used in the summary report
+
+### Rules
+
+- Don't overwhelm the user — recommend 2-4 tools max, not every skill in the system
+- If no extra skills are relevant (e.g., the task is pure backend with standard libraries), say so and suggest "Just the defaults"
+- Skills that the user's project already has in its local `.claude/skills/` take priority over global ones
+- If a skill would clearly help but isn't installed, mention it: "You don't have a {X} skill, but it might help here. Want to skip it or create one?"
+- If the brainstorm summary makes the tooling obvious (e.g., "build a landing page" → `landing-page` skill), pre-select it as the recommended option
+
+---
+
+## Phase 0: Pre-Flight Scoping (BLOCKING — workspace setup)
 
 Before any agent runs, scope the workspace using `AskUserQuestion`. **This is the ONLY phase that asks the user anything.**
 
@@ -197,25 +321,80 @@ WORKSPACE RULES:
 
 ---
 
-## Phase 1: Plan & Decompose
+## Phase 1: Plan & Decompose (orchestrator does this directly)
 
-1. Read `learnings.md` from the super-ralph skill directory
-2. Read the scoped codebase files
-3. Dispatch **ralph-planner** with: user query + BRAINSTORM_SUMMARY + learnings + codebase context + WORKSPACE_RULES
-4. Parse the JSON task array output
-5. Create workspace directories:
+The orchestrator decomposes the query itself — no separate planner agent needed. It already has everything: BRAINSTORM_SUMMARY, TOOLING_CONFIG, learnings, codebase context, and WORKSPACE_RULES.
+
+### Step 1: Gather context
+
+1. Read `learnings.md` — extract relevant past insights. If a pattern failed before, don't repeat it.
+2. Read the scoped codebase files to understand existing patterns and conventions.
+
+### Step 2: Decompose into tasks
+
+Break the query into the smallest independent tasks possible. Apply these principles:
+
+- **Set the bar HIGH** — every task must produce work worth shipping
+- **Be specific, not vague** — "handles edge cases" is useless. "Returns 404 with JSON error body when resource not found" is testable.
+- **Prevent laziness upfront** — anti-patterns tell the worker what NOT to do before they start cutting corners
+- **Smallest independent units** — if a task can be split further without creating artificial dependencies, split it
+- **Reference available skills** — use TOOLING_CONFIG to tag tasks with `skills_to_use` where relevant
+
+Output a JSON task array:
+
+```json
+[
+  {
+    "task_id": 1,
+    "title": "Short descriptive title",
+    "description": "Detailed description of what to build. Be explicit about behavior, inputs, outputs, and constraints.",
+    "quality_standard": "What 'excellent' looks like. Be specific. No shortcuts, no TODOs, no stubs. Production-grade or it doesn't count.",
+    "success_criteria": [
+      "Specific testable outcome — an assertion, not a wish",
+      "Another specific testable outcome"
+    ],
+    "anti_patterns": [
+      "Don't stub or mock the hard parts",
+      "Don't skip error handling",
+      "Don't leave TODOs or placeholder logic"
+    ],
+    "dependencies": [],
+    "test_strategy": "What tests to write, what to assert, what framework to use",
+    "skills_to_use": ["skill-name — when and why to invoke it during this task"]
+  }
+]
+```
+
+### Quality rules for decomposition
+
+- Success criteria must be **assertions** — things a test can verify, not feelings
+- Anti-patterns should target the **most common lazy shortcuts** for this specific task
+- If a task touches existing code, specify which files and what the expected behavior change is
+- If a task has no dependencies, say `"dependencies": []` — don't invent false dependencies
+- Each task should be completable by a single agent in one session
+- If you're unsure whether something should be one task or two, make it two
+
+### Step 3: Set up workspace
 
 ```bash
 mkdir -p workspace/task-{id}/tests workspace/task-{id}/output
 ```
 
-6. Dispatch independent tasks in parallel. Sequential tasks wait for dependencies.
+### Step 4: Dispatch tasks
+
+Dispatch tasks **sequentially in the foreground** (never use `run_in_background`). Tasks with dependencies wait for their dependencies to complete first. Independent tasks are dispatched one at a time.
+
+---
+
+## CRITICAL: Agent Dispatch Rule
+
+**All sub-agents MUST run in the foreground.** Never set `run_in_background: true` when dispatching agents via the Agent tool. Background agents cannot prompt the user for tool permission approvals (WebSearch, WebFetch, Bash, etc.), causing tools to be auto-denied and agents to fail silently. Accept sequential execution over losing tool access.
 
 ---
 
 ## Phase 2: Per-Task Execution Loop
 
-For each task from the planner. **Parallelize independent tasks** (no shared dependencies).
+For each task from the planner. Run tasks **sequentially** (foreground agents cannot run in parallel).
 
 ### Step 2a: Test Agent
 
@@ -241,7 +420,7 @@ while true:
         Add to prompt: "This is attempt {debug_trigger}. You MUST write debug.md before exiting."
 
     Dispatch fresh ralph-worker with:
-      task definition + test locations + failure_context + WORKSPACE_RULES
+      task definition + test locations + failure_context + TOOLING_CONFIG + WORKSPACE_RULES
 
     Run tests via Bash: {test_command}
 
@@ -290,7 +469,7 @@ Run tests again:
 
 ## Phase 3: Merge, Learn & Deliver
 
-After ALL tasks complete, dispatch **ralph-merger** with:
+After ALL tasks complete, dispatch **ralph-merger** in the **foreground** (never background) with:
 - All task titles, statuses, attempt counts, and output directories
 - Per-task notes: what worked, what failed, debug insights (passed in prompt, not in learnings.md)
 - WORKSPACE_RULES

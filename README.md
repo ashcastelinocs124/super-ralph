@@ -9,6 +9,7 @@ You: "/super-ralph build me a REST API with auth and rate limiting"
 
 Super Ralph:
   0. Brainstorm ── interactive Q&A to explore your intent, scope, and edge cases
+  0.5 Tooling  ── scans available skills/agents, recommends a custom toolset for the run
   1. Pre-Flight ── asks 4 setup questions (workspace scope + retry limit)
   2. Plan       ── decomposes query into independent tasks with high quality bar
   3. Per Task   ── test agent writes strict tests → worker implements → tests validate
@@ -29,8 +30,9 @@ After brainstorming and pre-flight, the entire loop runs **fully autonomously** 
 ```
 User Query
   -> Brainstorm: interactive Q&A with user (explore intent, scope, edge cases)
+  -> Tooling: scan skills/agents, recommend toolset, user confirms
   -> Pre-Flight: scope workspace + set MAX_RETRIES
-  -> ralph-planner: decompose into tasks (reads learnings.md + brainstorm summary)
+  -> Decompose: orchestrator breaks query into tasks directly (no separate agent)
   -> Per Task (parallel if independent):
       -> ralph-tester: write strict tests before any code exists
       -> ralph-worker: implement until tests pass
@@ -45,11 +47,10 @@ User Query
 
 ### Agents
 
-Super Ralph uses 5 specialized sub-agents, each dispatched as a fresh process with no shared context (prevents bias and sunk-cost reasoning):
+Super Ralph uses 4 specialized sub-agents, each dispatched as a fresh process with no shared context (prevents bias and sunk-cost reasoning). Task decomposition is handled directly by the orchestrator — it already has all the context it needs.
 
 | Agent | Type | Role |
 |-------|------|------|
-| **ralph-planner** | `opus` | Decomposes queries into tasks with strict success criteria, quality standards, and anti-patterns. Reads `learnings.md` to avoid past mistakes. Outputs JSON task array. |
 | **ralph-tester** | `opus` | Writes adversarial tests before any implementation exists. Covers happy path, edge cases, and failure modes. All tests runnable with a single command. |
 | **ralph-worker** | `opus` | Reads tests first, then implements production-grade code. On retries, gets failure context. At the debug trigger, writes `debug.md` with full reasoning trail. |
 | **ralph-debugger** | `opus` | Cold failure analyst. Reads `debug.md` with zero bias. Identifies the shared wrong assumption across all failed attempts. Writes a concrete, step-by-step fix plan. |
@@ -67,6 +68,24 @@ Before anything else, Super Ralph explores your idea through interactive Q&A:
 4. **You confirm** -- "yes, go ahead" or "let me adjust"
 
 The brainstorm summary feeds directly into the planner, so tasks are decomposed based on *explored, confirmed intent* -- not just the raw query. If the query is dead simple, brainstorming is skipped.
+
+---
+
+## Tooling Discovery
+
+After brainstorming, Super Ralph scans your environment for available skills and agents, then assembles a custom toolset for the run:
+
+1. **Scans** -- finds all skills in `~/.claude/skills/`, `.claude/skills/`, and project-local skill directories, plus all available agents
+2. **Matches** -- compares what you're building (from the brainstorm summary) to what each skill/agent does
+3. **Recommends** -- presents 2-4 relevant tools (e.g., `frontend-design` for UI work, `doc-search` for third-party APIs, `system-arch` for complex architecture)
+4. **You confirm** -- pick the recommended set, activate everything, or stick with Ralph's 5 default agents only
+
+The selected tools become the `TOOLING_CONFIG`, which is injected into agent prompts:
+- The **planner** references available skills in task definitions (e.g., "use `doc-search` before calling the Stripe API")
+- The **worker** invokes skills at the right moment during implementation
+- The **merger** notes which tools were used in the summary report
+
+This means Super Ralph adapts to your project's tech stack and available capabilities instead of always using the same fixed pipeline.
 
 ---
 
@@ -260,7 +279,6 @@ super-ralph/
     super-ralph/
       SKILL.md               # Orchestrator — the full loop logic
   agents/
-    ralph-planner.md         # Task decomposition with quality bar
     ralph-tester.md          # Adversarial test-first agent
     ralph-worker.md          # Implementation agent with retry + debug.md
     ralph-debugger.md        # Cold failure analysis agent
@@ -275,6 +293,7 @@ super-ralph/
 
 ## Design Principles
 
+- **Orchestrator plans directly** -- no separate planner agent. The orchestrator already has brainstorm summary, tooling config, and learnings — dispatching a separate agent to plan would just lose context.
 - **Fresh agents per task** -- no context pollution between tasks. Each sub-agent starts clean.
 - **Test-first** -- tests are written before implementation. They define "done," not the worker's opinion.
 - **Adversarial quality** -- anti-patterns in task definitions prevent common lazy shortcuts before they happen.
