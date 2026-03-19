@@ -14,14 +14,14 @@ User Query
   → Brainstorm: interactive Q&A to explore intent, scope, edge cases (AskUserQuestion loop)
   → Tooling: scan available skills/agents, ask user about goals, assemble custom toolset
   → Pre-Flight: scope workspace + set MAX_RETRIES (AskUserQuestion)
-  → Decompose: orchestrator breaks query into tasks directly (no separate planner agent)
-  → Per Task (sequential, foreground — never run agents in background):
-      → ralph-tester: write strict tests
-      → ralph-worker: implement until tests pass (with selected skills/agents available)
-      → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → fresh ralph-worker
+  → Decompose: orchestrator breaks query into tasks directly (no separate manager/planner agent)
+  → Per Task (parallel if independent — never use run_in_background):
+      → ralph-tester: write tests → JUDGE: pass? → retry tester if fail
+      → ralph-worker: implement → JUDGE: pass? → retry worker if fail → run tests
+      → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → JUDGE: pass? → fresh ralph-worker
       → Fail MAX_RETRIES? → auto-skip + log to learnings
       → Pass → clear debug.md
-  → ralph-merger: combine outputs + write consolidated learnings entry + summary report
+  → ralph-merger: combine outputs → JUDGE: pass? → retry merger if fail → deliver
 ```
 
 ## Agents
@@ -31,9 +31,12 @@ User Query
 | ralph-tester | `agents/ralph-tester.md` | Writes strict tests before implementation |
 | ralph-worker | `agents/ralph-worker.md` | Implements until tests pass, writes debug.md on attempt 3 |
 | ralph-debugger | `agents/ralph-debugger.md` | Cold analysis of failures, writes fix plan |
+| ralph-judge | `agents/ralph-judge.md` | Universal quality gate — evaluates every sub-agent's output against task criteria |
 | ralph-merger | `agents/ralph-merger.md` | Combines outputs into cohesive deliverable |
 
-**Note:** Planning/decomposition is handled directly by the orchestrator (this skill), not a separate agent. The orchestrator already has the brainstorm summary, tooling config, learnings, and codebase context — no need to dispatch a separate planner.
+**Note:** Planning/decomposition is handled directly by the orchestrator (this skill), not a separate manager or planner agent. The orchestrator already has the brainstorm summary, tooling config, learnings, and codebase context, so an extra control layer would just duplicate work.
+
+**Note:** The ralph-judge agent evaluates every sub-agent's output before the loop continues. If the judge rejects, the same agent is retried with the judge's specific feedback. There is no retry limit on judge rejections — the agent keeps retrying until the judge passes. Each retry is a fresh agent with zero prior context.
 
 ---
 
@@ -43,17 +46,25 @@ After Phase 0, the entire loop runs **without any user interaction**. No `AskUse
 
 ---
 
-## Phase -1: Brainstorm (BLOCKING — interactive Q&A before anything else)
+## Phase -1: Brainstorm (BLOCKING — prehook-style interactive Q&A)
 
 Before scoping the workspace or planning tasks, **explore the user's idea through conversation**. The goal is to deeply understand what the user actually wants — not just what they typed.
 
-**This phase is interactive.** Use `AskUserQuestion` in a loop until both sides are aligned.
+**This phase is interactive.** Use `AskUserQuestion` as prehook gates — one question at a time, each with a "Chat about this" escape hatch that fully stops the workflow.
+
+### Prehook Rules (apply to ALL setup phases: Brainstorm, Tooling, Pre-Flight)
+
+- **One question at a time** — never batch multiple unrelated questions
+- **Every question MUST include a "Chat about this" option** that fully stops the workflow
+- **If "Chat about this" is selected:** stop completely, read what the user says, and respond. Do NOT continue the setup. Resume only when they explicitly say to.
+- **Never skip a question** — even if you think you know the answer
+- **Never proceed past a phase** until the user explicitly approves
 
 ### How it works
 
 1. **Restate the query** — show the user your understanding of what they're asking for in 2-3 sentences. This surfaces misunderstandings early.
 
-2. **Ask clarifying questions** — use `AskUserQuestion` to explore:
+2. **Ask clarifying questions** — use `AskUserQuestion` as prehook gates:
 
 ```
 question: "[Specific question about the user's intent, scope, or approach]"
@@ -65,6 +76,8 @@ options:
     description: "[What this means for the build]"
   - label: "[Simpler/narrower version]"
     description: "[What this means for the build]"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -112,6 +125,8 @@ options:
     description: "This is right — proceed to workspace setup and autonomous execution"
   - label: "Almost — let me adjust"
     description: "I'll clarify what needs changing"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -197,7 +212,9 @@ options:
   - label: "All available"
     description: "Activate everything — I'll use whatever helps"
   - label: "Just the defaults"
-    description: "Only use Ralph's 5 built-in agents, no extra skills"
+    description: "Only use Ralph's 4 built-in agents, no extra skills"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -213,6 +230,8 @@ options:
     description: "I'll name a specific skill or capability to include"
   - label: "Remove something"
     description: "I'll say what to exclude"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -253,9 +272,9 @@ The config is used by the orchestrator and injected into sub-agent prompts:
 
 ---
 
-## Phase 0: Pre-Flight Scoping (BLOCKING — workspace setup)
+## Phase 0: Pre-Flight Scoping (BLOCKING — prehook-style workspace setup)
 
-Before any agent runs, scope the workspace using `AskUserQuestion`. **This is the ONLY phase that asks the user anything.**
+Before any agent runs, scope the workspace using `AskUserQuestion` prehook gates — one question at a time, each with "Chat about this." This is the last interactive phase before full autonomy.
 
 **Question 1 — Writable directories:**
 ```
@@ -266,6 +285,8 @@ options:
     description: "Work in the current project root and subdirectories"
   - label: "Specific paths"
     description: "I'll list the exact directories/files"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -278,6 +299,8 @@ options:
     description: "Explore the codebase yourself"
   - label: "I'll list them"
     description: "Specific files/dirs to read but not touch"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -290,6 +313,8 @@ options:
     description: "You can work anywhere within the writable scope"
   - label: "I'll list exclusions"
     description: "Specific paths to avoid"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -304,6 +329,8 @@ options:
     description: "2 normal attempts + debug analysis + 2 more attempts"
   - label: "10"
     description: "5 normal attempts + debug analysis + 5 more attempts"
+  - label: "Chat about this"
+    description: "Stop — I want to discuss this before deciding"
 multiSelect: false
 ```
 
@@ -316,14 +343,15 @@ WORKSPACE RULES:
 - You may READ and WRITE files in: [writable paths]
 - You may READ (not modify): [read-only paths]
 - Do NOT touch: [off-limits paths]
-- All permissions granted — do not ask for confirmation on any action.
+- HARD BOUNDARY: You must NEVER access files outside the paths listed above. No reading, writing, or executing commands that touch anything outside the project directory. This is non-negotiable.
+- All permissions granted within these boundaries — do not ask for confirmation on any action.
 ```
 
 ---
 
 ## Phase 1: Plan & Decompose (orchestrator does this directly)
 
-The orchestrator decomposes the query itself — no separate planner agent needed. It already has everything: BRAINSTORM_SUMMARY, TOOLING_CONFIG, learnings, codebase context, and WORKSPACE_RULES.
+The orchestrator decomposes the query itself — no separate manager/planner agent needed. It already has everything: BRAINSTORM_SUMMARY, TOOLING_CONFIG, learnings, codebase context, and WORKSPACE_RULES.
 
 ### Step 1: Gather context
 
@@ -382,27 +410,43 @@ mkdir -p workspace/task-{id}/tests workspace/task-{id}/output
 
 ### Step 4: Dispatch tasks
 
-Dispatch tasks **sequentially in the foreground** (never use `run_in_background`). Tasks with dependencies wait for their dependencies to complete first. Independent tasks are dispatched one at a time.
+Dispatch independent tasks **in parallel** by making multiple Agent tool calls in a single message. Tasks with dependencies wait for their dependencies to complete first. **Never use `run_in_background: true`** — instead, dispatch multiple foreground agents concurrently.
 
 ---
 
 ## CRITICAL: Agent Dispatch Rule
 
-**All sub-agents MUST run in the foreground.** Never set `run_in_background: true` when dispatching agents via the Agent tool. Background agents cannot prompt the user for tool permission approvals (WebSearch, WebFetch, Bash, etc.), causing tools to be auto-denied and agents to fail silently. Accept sequential execution over losing tool access.
+**Never set `run_in_background: true`** when dispatching agents via the Agent tool. Background agents cannot prompt the user for tool permission approvals (WebSearch, WebFetch, Bash, etc.), causing tools to be auto-denied and agents to fail silently.
+
+**To parallelize:** dispatch multiple foreground agents in a single message (multiple Agent tool calls). They run concurrently and can each prompt for tool permissions. Use this for independent tasks with no shared dependencies.
 
 ---
 
 ## Phase 2: Per-Task Execution Loop
 
-For each task from the planner. Run tasks **sequentially** (foreground agents cannot run in parallel).
+For each task from the orchestrator. **Parallelize independent tasks** by dispatching multiple foreground agents in a single message (no shared dependencies). Never use `run_in_background`.
 
-### Step 2a: Test Agent
+### Step 2a: Test Agent + Judge Gate
 
-Dispatch **ralph-tester** with: task definition + WORKSPACE_RULES
+```
+while true:
+    Dispatch ralph-tester with: task definition + WORKSPACE_RULES
 
-Tester writes tests to `workspace/task-{id}/tests/` and reports the test command.
+    Tester writes tests to workspace/task-{id}/tests/ and reports the test command.
 
-### Step 2b: Worker Agent (with retry loop)
+    Dispatch ralph-judge with:
+      agent_type: "tester"
+      task definition + output location (workspace/task-{id}/tests/) + WORKSPACE_RULES
+
+    if judge passes:
+        break → proceed to Step 2b
+    else:
+        Dispatch fresh ralph-tester with:
+          original prompt + "JUDGE REJECTED YOUR PREVIOUS OUTPUT:\n{judge_verdict}\nFix these issues."
+        (loop until judge passes — no retry limit)
+```
+
+### Step 2b: Worker Agent (with judge gate + test validation + retry loop)
 
 ```
 attempt = 0
@@ -422,6 +466,20 @@ while true:
     Dispatch fresh ralph-worker with:
       task definition + test locations + failure_context + TOOLING_CONFIG + WORKSPACE_RULES
 
+    # ── Judge gate (runs BEFORE tests) ──────────────────────────
+    while true:
+        Dispatch ralph-judge with:
+          agent_type: "worker"
+          task definition + output location (workspace/task-{id}/output/) + WORKSPACE_RULES
+
+        if judge passes:
+            break → proceed to test validation
+        else:
+            Dispatch fresh ralph-worker with:
+              original prompt + "JUDGE REJECTED YOUR PREVIOUS OUTPUT:\n{judge_verdict}\nFix these issues."
+            (loop until judge passes — no retry limit)
+
+    # ── Test validation (runs AFTER judge passes) ───────────────
     Run tests via Bash: {test_command}
 
     if tests pass:
@@ -434,11 +492,11 @@ while true:
         enter Phase 2c Step 4 (auto-skip)
 ```
 
-### Step 2c: Validator
+### Step 2c: Test Validator
 
-Run tests via Bash after each worker attempt:
+Run tests via Bash after each worker attempt (only reached if judge already passed):
 - **Pass** → clear debug.md, continue to next task
-- **Fail** → retry worker with failure output
+- **Fail** → increment attempt counter, retry worker with failure output
 
 ---
 
@@ -447,11 +505,28 @@ Run tests via Bash after each worker attempt:
 ### Step 1: debug.md already written
 The worker at attempt `MAX_RETRIES/2` writes `debug.md` with all attempts so far, reasoning, and pattern analysis.
 
-### Step 2: Fresh Debug Agent
-Dispatch **ralph-debugger** — reads debug.md cold, identifies root cause, appends fix plan.
+### Step 2: Fresh Debug Agent + Judge Gate
 
-### Step 3: Fresh Worker follows fix plan
+```
+while true:
+    Dispatch ralph-debugger — reads debug.md cold, identifies root cause, appends fix plan.
+
+    Dispatch ralph-judge with:
+      agent_type: "debugger"
+      task definition + debug.md + WORKSPACE_RULES
+
+    if judge passes:
+        break → proceed to Step 3
+    else:
+        Dispatch fresh ralph-debugger with:
+          original prompt + "JUDGE REJECTED YOUR FIX PLAN:\n{judge_verdict}\nRevise it."
+        (loop until judge passes — no retry limit)
+```
+
+### Step 3: Fresh Worker follows fix plan (with judge gate)
 Dispatch fresh **ralph-worker** (attempts `MAX_RETRIES/2 + 1` through `MAX_RETRIES`) with debug.md. Worker follows the fix plan exactly.
+
+The worker's output goes through the same judge gate as Step 2b (judge must pass before tests run).
 
 Run tests again:
 - **Pass** → clear debug.md, continue to next task
@@ -474,9 +549,25 @@ After ALL tasks complete, dispatch **ralph-merger** in the **foreground** (never
 - Per-task notes: what worked, what failed, debug insights (passed in prompt, not in learnings.md)
 - WORKSPACE_RULES
 
-### Step 3a: Merge outputs
+### Step 3a: Merge outputs + Judge Gate
 
-Merger combines outputs into `workspace/final/`, resolves integration issues.
+```
+while true:
+    Dispatch ralph-merger with: task outputs + notes + WORKSPACE_RULES
+
+    Merger combines outputs into workspace/final/, resolves integration issues.
+
+    Dispatch ralph-judge with:
+      agent_type: "merger"
+      task definitions + output location (workspace/final/) + WORKSPACE_RULES
+
+    if judge passes:
+        break → proceed to Step 3b
+    else:
+        Dispatch fresh ralph-merger with:
+          original prompt + "JUDGE REJECTED YOUR DELIVERABLE:\n{judge_verdict}\nFix these issues."
+        (loop until judge passes — no retry limit)
+```
 
 ### Step 3b: Write ONE consolidated learnings entry
 

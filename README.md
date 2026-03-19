@@ -34,24 +34,25 @@ User Query
   -> Pre-Flight: scope workspace + set MAX_RETRIES
   -> Decompose: orchestrator breaks query into tasks directly (no separate agent)
   -> Per Task (parallel if independent):
-      -> ralph-tester: write strict tests before any code exists
-      -> ralph-worker: implement until tests pass
+      -> ralph-tester: write tests -> JUDGE: pass? (retry tester if fail, no limit)
+      -> ralph-worker: implement -> JUDGE: pass? (retry worker if fail, no limit) -> run tests
          -> attempt 1..MAX_RETRIES/2: normal retries with failure context
          -> at MAX_RETRIES/2: worker writes debug.md (full reasoning trail)
-         -> ralph-debugger: cold analysis, identifies root cause, writes fix plan
+         -> ralph-debugger: write fix plan -> JUDGE: pass? (retry debugger if fail)
          -> attempt MAX_RETRIES/2+1..MAX_RETRIES: fresh worker follows fix plan
          -> still failing at MAX_RETRIES? auto-skip, log to learnings
       -> Pass -> capture learnings, clear debug.md
-  -> ralph-merger: combine all outputs + summary report
+  -> ralph-merger: combine outputs -> JUDGE: pass? (retry merger if fail) -> deliver
 ```
 
 ### Agents
 
-Super Ralph uses 4 specialized sub-agents, each dispatched as a fresh process with no shared context (prevents bias and sunk-cost reasoning). Task decomposition is handled directly by the orchestrator — it already has all the context it needs.
+Super Ralph uses 5 specialized sub-agents, each dispatched as a fresh process with no shared context (prevents bias and sunk-cost reasoning). Task decomposition is handled directly by the orchestrator — it already has all the context it needs.
 
 | Agent | Type | Role |
 |-------|------|------|
 | **ralph-tester** | `opus` | Writes adversarial tests before any implementation exists. Covers happy path, edge cases, and failure modes. All tests runnable with a single command. |
+| **ralph-judge** | `opus` | Universal quality gate. Evaluates every sub-agent's output against the task definition's quality standard, success criteria, and anti-patterns. Returns PASS or FAIL with specific feedback. No retry limit — agents keep going until the judge is satisfied. |
 | **ralph-worker** | `opus` | Reads tests first, then implements production-grade code. On retries, gets failure context. At the debug trigger, writes `debug.md` with full reasoning trail. |
 | **ralph-debugger** | `opus` | Cold failure analyst. Reads `debug.md` with zero bias. Identifies the shared wrong assumption across all failed attempts. Writes a concrete, step-by-step fix plan. |
 | **ralph-merger** | `opus` | Combines independently-built task outputs into one cohesive deliverable. Resolves import conflicts, naming collisions, and missing glue code. Produces summary report. |
@@ -67,7 +68,7 @@ Before anything else, Super Ralph explores your idea through interactive Q&A:
 3. **Produces a summary** -- captures the confirmed intent, scope, key decisions, and constraints
 4. **You confirm** -- "yes, go ahead" or "let me adjust"
 
-The brainstorm summary feeds directly into the planner, so tasks are decomposed based on *explored, confirmed intent* -- not just the raw query. If the query is dead simple, brainstorming is skipped.
+The brainstorm summary feeds directly into the orchestrator, so tasks are decomposed based on *explored, confirmed intent* -- not just the raw query. If the query is dead simple, brainstorming is skipped.
 
 ---
 
@@ -81,7 +82,7 @@ After brainstorming, Super Ralph scans your environment for available skills and
 4. **You confirm** -- pick the recommended set, activate everything, or stick with Ralph's 5 default agents only
 
 The selected tools become the `TOOLING_CONFIG`, which is injected into agent prompts:
-- The **planner** references available skills in task definitions (e.g., "use `doc-search` before calling the Stripe API")
+- The **orchestrator** references available skills in task definitions (e.g., "use `doc-search` before calling the Stripe API")
 - The **worker** invokes skills at the right moment during implementation
 - The **merger** notes which tools were used in the summary report
 
@@ -117,7 +118,7 @@ These answers become `WORKSPACE_RULES` injected into every sub-agent prompt. Aft
 
 ## Task Decomposition
 
-The planner doesn't just split work -- it sets a quality bar. Each task includes:
+The orchestrator doesn't just split work -- it sets a quality bar. Each task includes:
 
 ```json
 {
@@ -186,7 +187,7 @@ Two files with different purposes:
 | File | Purpose | Lifecycle |
 |------|---------|-----------|
 | `debug.md` | Scratch pad for active debugging | Written during debug, cleared after every run |
-| `learnings.md` | Permanent memory across runs | One entry per query, read by planner before every run |
+| `learnings.md` | Permanent memory across runs | One entry per query, read by the orchestrator before every run |
 
 ### One entry per query, not per task
 
@@ -221,7 +222,7 @@ After all tasks complete, the merger synthesizes everything into **a single cons
 - Don't use datetime.now() for JWT timestamps -- always UTC
 ```
 
-The planner reads `learnings.md` before every new run. Over time, Super Ralph builds a lean, high-signal knowledge base -- not a wall of per-task noise.
+The orchestrator reads `learnings.md` before every new run. Over time, Super Ralph builds a lean, high-signal knowledge base -- not a wall of per-task noise.
 
 ---
 
@@ -280,6 +281,7 @@ super-ralph/
       SKILL.md               # Orchestrator — the full loop logic
   agents/
     ralph-tester.md          # Adversarial test-first agent
+    ralph-judge.md           # Universal quality gate — evaluates all sub-agent output
     ralph-worker.md          # Implementation agent with retry + debug.md
     ralph-debugger.md        # Cold failure analysis agent
     ralph-merger.md          # Integration and merge agent
@@ -291,17 +293,46 @@ super-ralph/
 
 ---
 
+## Judge System
+
+Every sub-agent's output goes through **ralph-judge** before the loop continues. The judge evaluates output against the task definition's quality standard, success criteria, and anti-patterns.
+
+```
+tester → JUDGE → pass? ──► worker → JUDGE → pass? ──► run tests
+              │ fail                      │ fail
+              └─ retry tester             └─ retry worker
+                 (with feedback)             (with feedback)
+
+debugger → JUDGE → pass? ──► worker retries with fix plan
+                │ fail
+                └─ retry debugger
+
+merger → JUDGE → pass? ──► deliver
+              │ fail
+              └─ retry merger
+```
+
+**Key properties:**
+- **No retry limit** -- agents keep going until the judge is satisfied
+- **Specific feedback** -- on rejection, the judge returns exactly what's wrong and what "good" looks like
+- **Fresh evaluation** -- judge starts with zero context each time, no bias from previous evaluations
+- **Adapts per agent type** -- checks different criteria for testers (adversarial coverage), workers (anti-patterns, production quality), debuggers (actionable fix plans), and mergers (integration completeness)
+
+---
+
 ## Design Principles
 
-- **Orchestrator plans directly** -- no separate planner agent. The orchestrator already has brainstorm summary, tooling config, and learnings — dispatching a separate agent to plan would just lose context.
+- **Single control layer** -- no separate manager or planner agent. The orchestrator already has brainstorm summary, tooling config, and learnings, so splitting control responsibilities would just add handoff overhead and lose context.
+- **Judge everything** -- every sub-agent's output passes through ralph-judge before the loop continues. No retry limit -- agents keep going until the quality bar is met.
 - **Fresh agents per task** -- no context pollution between tasks. Each sub-agent starts clean.
 - **Test-first** -- tests are written before implementation. They define "done," not the worker's opinion.
 - **Adversarial quality** -- anti-patterns in task definitions prevent common lazy shortcuts before they happen.
 - **Cold debugging** -- the debugger has zero context from failed attempts. That's its superpower -- no bias.
 - **Brainstorm first** -- interactive Q&A explores intent, scope, and edge cases before any autonomous work begins.
-- **One-shot autonomy** -- after brainstorming and 4 setup questions, zero user interaction. Failed tasks are auto-skipped, not escalated.
-- **Persistent learning** -- `learnings.md` accumulates insights across runs. The planner reads it every time.
-- **Configurable retry depth** -- you control how many attempts per task. Debug triggers at the halfway point.
+- **Prehook setup** -- all setup questions use prehook-style gates with "Chat about this" escape hatches.
+- **One-shot autonomy** -- after brainstorming and setup, zero user interaction. Failed tasks are auto-skipped, not escalated.
+- **Persistent learning** -- `learnings.md` accumulates insights across runs. The orchestrator reads it every time.
+- **Configurable retry depth** -- you control how many test-failure attempts per task. Debug triggers at the halfway point.
 
 ---
 
