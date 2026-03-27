@@ -7,6 +7,8 @@ argument-hint: "QUERY"
 
 The user wants to run the Super Ralph autonomous agentic loop.
 
+> Additive Codex note: this file is the Claude slash-command entrypoint. In Codex environments without slash commands, trigger the same flow when the user says "super ralph", "ralph this", or equivalent, and pass the user request as the query argument to the `super-ralph` skill.
+
 **Invoke the `super-ralph` skill immediately** with the user's query. The skill handles everything:
 
 1. Brainstorm (interactive Q&A to explore intent, scope, and edge cases with the user)
