@@ -2,6 +2,17 @@
 
 Autonomous agentic loop plugin for Claude Code. Give it a query, answer 4 setup questions, and walk away. It decomposes your request into tasks, writes tests first, implements with fresh sub-agents, self-debugs when stuck, and learns from every run.
 
+## Runtime Compatibility (Additive)
+
+Super Ralph remains Claude-first and now includes additive Codex-compatible operating guidance.
+
+| Concept | Claude | Codex |
+|---------|--------|-------|
+| Interactive setup gates | `AskUserQuestion` | Ask one plain-text question at a time and wait for a reply |
+| Sub-agent execution | `Agent` tool calls | Fresh Codex sessions/agent runs with the same role prompts |
+| Parallel work | Multiple foreground `Agent` calls in one turn | Multiple foreground sessions in parallel (no detached/background jobs) |
+| Skill discovery paths | `~/.claude/skills`, `.claude/skills` | `~/.codex/skills`, `.codex/skills` |
+
 ## How It Works
 
 ```
@@ -105,6 +116,7 @@ These answers produce a **JUDGE_RUBRIC** -- a per-dimension strictness matrix th
 After brainstorming, Super Ralph scans your environment for available skills and agents, then assembles a custom toolset for the run:
 
 1. **Scans** -- finds all skills in `~/.claude/skills/`, `.claude/skills/`, and project-local skill directories, plus all available agents
+   - Codex additive: also scan `~/.codex/skills/`, `.codex/skills/`, and project-local `.codex/skills/` directories
 2. **Matches** -- compares what you're building (from the brainstorm summary) to what each skill/agent does
 3. **Recommends** -- presents 2-4 relevant tools (e.g., `frontend-design` for UI work, `doc-search` for third-party APIs, `system-arch` for complex architecture)
 4. **You confirm** -- pick the recommended set, activate everything, or stick with Ralph's 5 default agents only
@@ -314,6 +326,16 @@ git clone https://github.com/ashcastelinocs124/super-ralph.git ~/.claude/skills/
 ### Manual
 
 Copy the files into your `~/.claude/skills/` directory and ensure the plugin manifest is recognized by Claude Code.
+
+### As a Codex Skill Bundle (Additive)
+
+Clone into your Codex skills directory:
+
+```bash
+git clone https://github.com/ashcastelinocs124/super-ralph.git ~/.codex/skills/super-ralph
+```
+
+Then reference Super Ralph from your Codex/Conductor agent instructions (for example, project `AGENTS.md`) so "super ralph" requests invoke `skills/super-ralph/SKILL.md`.
 
 ---
 

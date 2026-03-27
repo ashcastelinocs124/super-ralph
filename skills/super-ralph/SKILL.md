@@ -7,6 +7,20 @@ description: Autonomous agentic loop that decomposes any user query into tasks, 
 
 Autonomous agentic loop: decompose → test → build → debug → learn → merge.
 
+## Runtime Compatibility (Additive)
+
+This skill is authored in Claude-native terms and is also intended to run in Codex environments without removing any Claude behavior.
+
+Use this mapping when running outside Claude:
+
+| Claude primitive | Codex-compatible equivalent |
+|------------------|-----------------------------|
+| `AskUserQuestion` | Ask a single plain-text question in chat, include the same options, and wait for a reply before proceeding |
+| `Agent` tool dispatch | Run the same role prompt in a fresh Codex session/agent run; parallelize independent work with foreground parallel runs |
+| `run_in_background: true` | Do not detach jobs. Keep work in foreground sessions so prompts/approvals and progress stay visible |
+
+If this file says "use AskUserQuestion," treat that as "single interactive question gate" in Codex.
+
 ## Quick Reference
 
 ```
@@ -51,7 +65,7 @@ After Phase 0, the entire loop runs **without any user interaction**. No `AskUse
 
 Before scoping the workspace or planning tasks, **explore the user's idea through conversation**. The goal is to deeply understand what the user actually wants — not just what they typed.
 
-**This phase is interactive.** Use `AskUserQuestion` as prehook gates — one question at a time, each with a "Chat about this" escape hatch that fully stops the workflow.
+**This phase is interactive.** Use `AskUserQuestion` as prehook gates — one question at a time, each with a "Chat about this" escape hatch that fully stops the workflow. In Codex, ask the same question directly in chat and wait for the response before continuing.
 
 ### Prehook Rules (apply to ALL setup phases: Brainstorm, Tooling, Pre-Flight)
 
@@ -277,13 +291,18 @@ Search for all available skills and agents in the environment:
 # Scan for skills
 find ~/.claude/skills/ -name "SKILL.md" 2>/dev/null
 find .claude/skills/ -name "SKILL.md" 2>/dev/null
+find ~/.codex/skills/ -name "SKILL.md" 2>/dev/null
+find .codex/skills/ -name "SKILL.md" 2>/dev/null
 
 # Scan for agents
 find ~/.claude/agents/ -name "*.md" 2>/dev/null
 find .claude/agents/ -name "*.md" 2>/dev/null
+find ~/.codex/agents/ -name "*.md" 2>/dev/null
+find .codex/agents/ -name "*.md" 2>/dev/null
 
 # Also check for project-local skills
 find . -path "*/.claude/skills/*/SKILL.md" 2>/dev/null
+find . -path "*/.codex/skills/*/SKILL.md" 2>/dev/null
 ```
 
 Read the `name` and `description` fields from each discovered skill/agent file. Build an inventory:
@@ -384,6 +403,7 @@ The config is used by the orchestrator and injected into sub-agent prompts:
 - Don't overwhelm the user — recommend 2-4 tools max, not every skill in the system
 - If no extra skills are relevant (e.g., the task is pure backend with standard libraries), say so and suggest "Just the defaults"
 - Skills that the user's project already has in its local `.claude/skills/` take priority over global ones
+- Skills that the user's project already has in its local `.codex/skills/` take priority over global ones
 - If a skill would clearly help but isn't installed, mention it: "You don't have a {X} skill, but it might help here. Want to skip it or create one?"
 - If the brainstorm summary makes the tooling obvious (e.g., "build a landing page" → `landing-page` skill), pre-select it as the recommended option
 
@@ -527,7 +547,7 @@ mkdir -p workspace/task-{id}/tests workspace/task-{id}/output
 
 ### Step 4: Dispatch tasks
 
-Dispatch independent tasks **in parallel** by making multiple Agent tool calls in a single message. Tasks with dependencies wait for their dependencies to complete first. **Never use `run_in_background: true`** — instead, dispatch multiple foreground agents concurrently.
+Dispatch independent tasks **in parallel** by making multiple Agent tool calls in a single message. Tasks with dependencies wait for their dependencies to complete first. **Never use `run_in_background: true`** — instead, dispatch multiple foreground agents concurrently. In Codex, use multiple foreground sessions/agents in parallel for independent tasks.
 
 ---
 
@@ -536,6 +556,8 @@ Dispatch independent tasks **in parallel** by making multiple Agent tool calls i
 **Never set `run_in_background: true`** when dispatching agents via the Agent tool. Background agents cannot prompt the user for tool permission approvals (WebSearch, WebFetch, Bash, etc.), causing tools to be auto-denied and agents to fail silently.
 
 **To parallelize:** dispatch multiple foreground agents in a single message (multiple Agent tool calls). They run concurrently and can each prompt for tool permissions. Use this for independent tasks with no shared dependencies.
+
+Codex equivalent: run multiple foreground sessions/agents concurrently and avoid detached/background execution.
 
 ---
 
