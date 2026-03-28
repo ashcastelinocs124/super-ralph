@@ -1,6 +1,6 @@
 # Super Ralph
 
-Autonomous agentic loop plugin for Claude Code. Give it a query, answer 4 setup questions, and walk away. It decomposes your request into tasks, writes tests first, implements with fresh sub-agents, self-debugs when stuck, and learns from every run.
+Autonomous agentic loop plugin for Claude Code. Give it a query, choose oneshot or brainstorm, and walk away. It decomposes your request into tasks, writes tests first, implements with fresh sub-agents, self-debugs when stuck, and learns from every run.
 
 ## Runtime Compatibility (Additive)
 
@@ -19,19 +19,20 @@ Super Ralph remains Claude-first and now includes additive Codex-compatible oper
 You: "/super-ralph build me a REST API with auth and rate limiting"
 
 Super Ralph:
-  0. Brainstorm ── interactive Q&A to explore your intent, scope, and edge cases
-  0.25 Intent  ── 3 questions (priority, audience, lifespan) → shapes how strictly outputs are judged
-  0.5 Tooling  ── scans available skills/agents, recommends a custom toolset for the run
-  1. Pre-Flight ── asks 4 setup questions (workspace scope + retry limit)
-  2. Plan       ── decomposes query into independent tasks with high quality bar
-  3. Per Task   ── test agent writes strict tests → worker implements → tests validate
-  4. Debug      ── if stuck at halfway mark, writes debug.md → fresh debugger analyzes cold → retry
-  5. Learn      ── every outcome (pass or fail) logged to learnings.md
-  6. Merge      ── combines all task outputs into one cohesive deliverable
-  7. Deliver    ── summary report + merged output in workspace/final/
+  0. Mode       ── oneshot (fully autonomous) or brainstorm (interactive)?
+  1. Brainstorm  ── interactive Q&A (brainstorm) OR auto-analysis (oneshot)
+  2. Intent      ── priority, audience, lifespan → shapes judge strictness
+  3. Tooling     ── scans skills/agents, recommends or auto-selects toolset
+  4. Pre-Flight  ── workspace scope + retry limit (brainstorm asks, oneshot defaults)
+  5. Plan       ── decomposes query into independent tasks with high quality bar
+  6. Per Task   ── test agent writes strict tests → worker implements → tests validate
+  7. Debug      ── if stuck at halfway mark, writes debug.md → fresh debugger analyzes cold → retry
+  8. Learn      ── every outcome (pass or fail) logged to learnings.md
+  9. Merge      ── combines all task outputs into one cohesive deliverable
+  10. Deliver   ── summary report + merged output in workspace/final/
 ```
 
-After brainstorming and pre-flight, the entire loop runs **fully autonomously** with zero user interaction. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
+After setup (interactive or oneshot), the entire loop runs **fully autonomously** with zero user interaction. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
 
 ---
 
@@ -41,7 +42,8 @@ After brainstorming and pre-flight, the entire loop runs **fully autonomously** 
 
 ```
 User Query
-  -> Brainstorm: interactive Q&A with user (explore intent, scope, edge cases)
+  -> Mode Selection: oneshot or brainstorm (single question)
+  -> Brainstorm: interactive Q&A (brainstorm) OR auto-analysis (oneshot)
   -> Intent Profile: 3 questions (priority, audience, lifespan) → JUDGE_RUBRIC
   -> Tooling: scan skills/agents, recommend toolset, user confirms
   -> Pre-Flight: scope workspace + set MAX_RETRIES
@@ -82,6 +84,20 @@ Before anything else, Super Ralph explores your idea through interactive Q&A:
 4. **You confirm** -- "yes, go ahead" or "let me adjust"
 
 The brainstorm summary feeds directly into the orchestrator, so tasks are decomposed based on *explored, confirmed intent* -- not just the raw query. If the query is dead simple, brainstorming is skipped.
+
+---
+
+## Oneshot Mode
+
+For users who know what they want and trust Ralph's judgment, oneshot mode skips all interactive setup. Ralph asks one question — "Oneshot or Brainstorm?" — then handles everything autonomously:
+
+- **Analyzes your query** to infer intent, scope, and constraints (no Q&A)
+- **Defaults to balanced settings** — solid quality, team audience, weeks-to-months lifespan
+- **Auto-selects tools** from available skills and agents
+- **Scopes workspace** to current directory with 6 retries
+- **Delivers silently** — no narration until the final result
+
+Use brainstorm mode when your request is ambiguous or you want to shape the approach. Use oneshot when it's clear-cut and you just want results.
 
 ---
 
@@ -403,7 +419,8 @@ merger → JUDGE → pass? ──► deliver
 - **Brainstorm first** -- interactive Q&A explores intent, scope, and edge cases before any autonomous work begins.
 - **Prehook setup** -- all setup questions use prehook-style gates with "Chat about this" escape hatches.
 - **Intent-driven quality** -- the judge's strictness adapts to what the user actually cares about (priority, audience, lifespan), not a fixed bar.
-- **One-shot autonomy** -- after brainstorming and setup, zero user interaction. Failed tasks are auto-skipped, not escalated.
+- **Oneshot mode** -- a single prehook lets users skip all interactive setup. Ralph self-decides brainstorm answers, intent profile, tooling, and workspace scope using safe defaults and query analysis. Full pipeline still runs, just without human gates.
+- **Post-setup autonomy** -- after setup (interactive or oneshot), zero user interaction. Failed tasks are auto-skipped, not escalated.
 - **Two-tier learning** -- per-task learnings written in real-time to `learnings.md` (with dependency-based forwarding), plus per-agent learnings files (`ralph-*-learnings.md`) for role-specific insights.
 - **Configurable retry depth** -- you control how many test-failure attempts per task. Debug triggers at the halfway point.
 
