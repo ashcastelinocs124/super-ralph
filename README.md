@@ -19,11 +19,11 @@ Super Ralph remains Claude-first and now includes additive Codex-compatible oper
 You: "/super-ralph build me a REST API with auth and rate limiting"
 
 Super Ralph:
-  0. Mode       ── oneshot (fully autonomous) or brainstorm (interactive)?
-  1. Brainstorm  ── interactive Q&A (brainstorm) OR auto-analysis (oneshot)
-  2. Intent      ── priority, audience, lifespan → shapes judge strictness
-  3. Tooling     ── scans skills/agents, recommends or auto-selects toolset
-  4. Pre-Flight  ── workspace scope + retry limit (brainstorm asks, oneshot defaults)
+  0. Mode       ── oneshot or brainstorm? (only difference: who decides — Ralph or you)
+  1. Brainstorm  ── explore intent, scope, edge cases (user decides in brainstorm, Ralph decides in oneshot)
+  2. Intent      ── priority, audience, lifespan → shapes judge strictness (always runs)
+  3. Tooling     ── scans skills/agents, selects toolset (always runs)
+  4. Pre-Flight  ── workspace scope + retry limit (always runs)
   5. Plan       ── decomposes query into independent tasks with high quality bar
   6. Per Task   ── test agent writes strict tests → worker implements → tests validate
   7. Debug      ── if stuck at halfway mark, writes debug.md → fresh debugger analyzes cold → retry
@@ -32,7 +32,7 @@ Super Ralph:
   10. Deliver   ── summary report + merged output in workspace/final/
 ```
 
-After setup (interactive or oneshot), the entire loop runs **fully autonomously** with zero user interaction. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
+Both modes run the **identical pipeline** — brainstorm, intent, tooling, pre-flight, plan, execute, debug, learn, merge. In oneshot, Ralph makes every decision; in brainstorm, you do. After setup, the execution loop is fully autonomous either way. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
 
 ---
 
@@ -89,15 +89,17 @@ The brainstorm summary feeds directly into the orchestrator, so tasks are decomp
 
 ## Oneshot Mode
 
-For users who know what they want and trust Ralph's judgment, oneshot mode skips all interactive setup. Ralph asks one question — "Oneshot or Brainstorm?" — then handles everything autonomously:
+Oneshot runs the **exact same pipeline** as brainstorm — every phase still executes in full. The only difference is who makes the decisions: in brainstorm, the user decides at each gate; in oneshot, Ralph decides. No phases are skipped.
 
-- **Analyzes your query** to infer intent, scope, and constraints (no Q&A)
-- **Defaults to balanced settings** — solid quality, team audience, weeks-to-months lifespan
-- **Auto-selects tools** from available skills and agents
-- **Scopes workspace** to current directory with 6 retries
-- **Delivers silently** — no narration until the final result
+Ralph asks one question — "Oneshot or Brainstorm?" — then handles everything autonomously:
 
-Use brainstorm mode when your request is ambiguous or you want to shape the approach. Use oneshot when it's clear-cut and you just want results.
+- **Brainstorms your query** — analyzes intent, scope, constraints, and edge cases (same analysis as brainstorm mode, Ralph just decides instead of asking)
+- **Sets intent profile** — infers priority, audience, and lifespan to calibrate the judge rubric (defaults to balanced: solid quality, team audience, weeks-to-months lifespan)
+- **Selects tools** — scans available skills and agents, picks the recommended set
+- **Scopes workspace** — sets writable directories, read-only context, off-limits paths, and retry limit (defaults to current directory, 6 retries)
+- **Then runs the full execution loop** — decompose, test, build, debug, learn, merge — identical to brainstorm mode
+
+Use brainstorm mode when your request is ambiguous or you want to shape the approach. Use oneshot when it's clear-cut and you just want results. Either way, the full pipeline runs.
 
 ---
 
@@ -305,10 +307,24 @@ All learnings (both tiers) must be **generalizable** -- insights that would help
 
 ## Usage
 
-### Slash Command
+### Slash Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/super-ralph <query>` | Asks "Oneshot or Brainstorm?" — you choose how much control to keep |
+| `/ralph <query>` | Oneshot shortcut — pre-selects oneshot mode, zero questions, auto-accept permissions, Ralph decides everything |
+
+Both commands run the **identical pipeline** (brainstorm, intent, tooling, pre-flight, decompose, test, build, debug, learn, merge). The difference is who makes the decisions:
+
+- `/super-ralph` — asks you first, then either you decide (brainstorm) or Ralph decides (oneshot)
+- `/ralph` — Ralph decides everything from the start. Also auto-configures tool permissions so sub-agents never prompt for approval.
 
 ```
+# You choose the mode and shape the approach
 /super-ralph build a CLI tool that converts CSV to JSON with streaming support
+
+# Ralph handles everything — zero questions, zero permission prompts
+/ralph build a CLI tool that converts CSV to JSON with streaming support
 ```
 
 ### Natural Language
@@ -318,9 +334,9 @@ Just say "ralph this" or "break this down and build it" in any conversation.
 ### Examples
 
 ```
-/super-ralph add user authentication with JWT, refresh tokens, and rate limiting
+/ralph add user authentication with JWT, refresh tokens, and rate limiting
 
-/super-ralph refactor the payment module into separate services with proper error handling
+/ralph refactor the payment module into separate services with proper error handling
 
 /super-ralph build a real-time notification system with WebSocket, email, and SMS channels
 
@@ -331,27 +347,33 @@ Just say "ralph this" or "break this down and build it" in any conversation.
 
 ## Install
 
-### As a Claude Code Plugin
-
-Clone and add to your Claude Code configuration:
-
 ```bash
-git clone https://github.com/ashcastelinocs124/super-ralph.git ~/.claude/skills/super-ralph
+git clone https://github.com/ashcastelinocs124/super-ralph.git ~/super-ralph && bash ~/super-ralph/install.sh
 ```
 
-### Manual
+That's it. The install script clones the repo and links the skill, all 5 agents, and both slash commands (`/ralph` and `/super-ralph`) into Claude Code. Open Claude Code and type `/ralph build me a REST API`.
 
-Copy the files into your `~/.claude/skills/` directory and ensure the plugin manifest is recognized by Claude Code.
-
-### As a Codex Skill Bundle (Additive)
-
-Clone into your Codex skills directory:
+### Update
 
 ```bash
-git clone https://github.com/ashcastelinocs124/super-ralph.git ~/.codex/skills/super-ralph
+cd ~/super-ralph && git pull
 ```
 
-Then reference Super Ralph from your Codex/Conductor agent instructions (for example, project `AGENTS.md`) so "super ralph" requests invoke `skills/super-ralph/SKILL.md`.
+Symlinks mean updates take effect immediately — no re-install needed.
+
+### Uninstall
+
+```bash
+bash ~/super-ralph/uninstall.sh
+```
+
+### Codex / Conductor
+
+```bash
+RALPH_DIR=~/super-ralph bash ~/super-ralph/install.sh
+```
+
+Then reference Super Ralph from your Codex/Conductor agent instructions so "super ralph" or "ralph this" requests invoke `skills/super-ralph/SKILL.md`.
 
 ---
 
@@ -362,7 +384,8 @@ super-ralph/
   .claude-plugin/
     plugin.json              # Plugin manifest (name, description, version)
   commands/
-    super-ralph.md           # /super-ralph slash command entry point
+    super-ralph.md           # /super-ralph slash command (asks oneshot vs brainstorm)
+    ralph.md                 # /ralph slash command (oneshot shortcut — zero questions)
   skills/
     super-ralph/
       SKILL.md               # Orchestrator — the full loop logic
@@ -372,6 +395,10 @@ super-ralph/
     ralph-worker.md          # Implementation agent with retry + debug.md
     ralph-debugger.md        # Cold failure analysis agent
     ralph-merger.md          # Integration and merge agent
+  install.sh                 # One-command installer — links everything into Claude Code
+  uninstall.sh               # Clean removal
+  scripts/
+    setup-permissions.sh     # Merges Ralph permissions into any project's .claude/settings.json
   docs/
     plans/                   # Design docs and implementation plans
   learnings.md               # Persistent cross-run memory
@@ -419,7 +446,7 @@ merger → JUDGE → pass? ──► deliver
 - **Brainstorm first** -- interactive Q&A explores intent, scope, and edge cases before any autonomous work begins.
 - **Prehook setup** -- all setup questions use prehook-style gates with "Chat about this" escape hatches.
 - **Intent-driven quality** -- the judge's strictness adapts to what the user actually cares about (priority, audience, lifespan), not a fixed bar.
-- **Oneshot mode** -- a single prehook lets users skip all interactive setup. Ralph self-decides brainstorm answers, intent profile, tooling, and workspace scope using safe defaults and query analysis. Full pipeline still runs, just without human gates.
+- **Oneshot mode** -- the entire pipeline still runs; the only difference is Ralph makes the decisions at each gate instead of asking the user. Brainstorm analysis, intent profiling, tooling selection, and workspace scoping all execute — Ralph just self-decides using safe defaults and query analysis instead of prompting.
 - **Post-setup autonomy** -- after setup (interactive or oneshot), zero user interaction. Failed tasks are auto-skipped, not escalated.
 - **Two-tier learning** -- per-task learnings written in real-time to `learnings.md` (with dependency-based forwarding), plus per-agent learnings files (`ralph-*-learnings.md`) for role-specific insights.
 - **Configurable retry depth** -- you control how many test-failure attempts per task. Debug triggers at the halfway point.
