@@ -12,6 +12,7 @@ The user wants to run the Super Ralph autonomous agentic loop.
 **Invoke the `super-ralph` skill immediately** with the user's query. The skill handles everything:
 
 1. Mode selection (oneshot or brainstorm — single question)
+2. If oneshot: auto-configures .claude/settings.json so sub-agents never prompt
 2. Brainstorm (if brainstorm: interactive Q&A; if oneshot: auto-analyzed silently)
 3. Tooling discovery (scan available skills/agents, recommend or auto-select toolset)
 4. Pre-flight scoping (if brainstorm: ask about workspace; if oneshot: use defaults)

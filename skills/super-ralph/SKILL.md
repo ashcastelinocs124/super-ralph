@@ -26,6 +26,7 @@ If this file says "use AskUserQuestion," treat that as "single interactive quest
 ```
 User Query
   → Mode Selection: oneshot (fully autonomous) or brainstorm (interactive) — single AskUserQuestion
+  → IF oneshot: Permissions Bootstrap — auto-configure .claude/settings.json so sub-agents never prompt
   → IF brainstorm: interactive Q&A to explore intent, scope, edge cases (AskUserQuestion loop)
   → IF oneshot: auto-analyze query, infer intent/scope/constraints, write BRAINSTORM_SUMMARY silently
   → Intent Profile: 3 questions or auto-infer (based on MODE) → JUDGE_RUBRIC
@@ -67,9 +68,13 @@ After Phase 0, the entire loop runs **without any user interaction**. No `AskUse
 
 The first and possibly only question Super Ralph asks. Determines whether the rest of the setup is interactive or autonomous.
 
+### Pre-set MODE (from `/ralph` command)
+
+If `MODE` was already set before this phase (e.g., the user invoked `/ralph` which pre-sets `MODE = oneshot`), **skip this question entirely** and proceed with the pre-set mode. Do NOT ask the mode selection question — the user already chose by using the oneshot command.
+
 ### How it works
 
-Ask one `AskUserQuestion`:
+If MODE is not pre-set, ask one `AskUserQuestion`:
 
 ```
 question: "How should I approach this?"
@@ -96,9 +101,13 @@ Store the answer as `MODE`:
 | `brainstorm` | All phases run interactively as documented below (existing behavior, unchanged) |
 | `oneshot` | All phases still run, but every `AskUserQuestion` gate is replaced with autonomous self-decision. No further user interaction until final delivery. |
 
+### CRITICAL: Oneshot runs the FULL loop
+
+Oneshot does NOT skip phases. Every phase (Brainstorm, Intent Profile, Tooling, Pre-Flight, Decompose, Execute, Merge) still runs in full. The only difference is that Ralph makes the decisions at each gate instead of asking the user. The pipeline is identical — the decision-maker changes.
+
 ### Oneshot defaults
 
-When `MODE = oneshot`, the orchestrator uses these defaults instead of asking:
+When `MODE = oneshot`, the orchestrator makes these decisions autonomously instead of asking:
 
 | Phase | Default |
 |-------|---------|
@@ -109,6 +118,115 @@ When `MODE = oneshot`, the orchestrator uses these defaults instead of asking:
 
 ---
 
+## Phase -1.5: Permissions Bootstrap (ONESHOT ONLY — silent, runs immediately after mode selection)
+
+**This phase only runs when `MODE = oneshot`.** If `MODE = brainstorm`, skip this entirely — the user keeps normal Claude Code permission prompts.
+
+When running in oneshot mode, sub-agents need to execute without blocking on tool approval prompts. This phase auto-configures the project's `.claude/settings.json` so every tool Ralph's agents use is pre-approved.
+
+### How it works
+
+1. **Check** if `.claude/settings.json` exists in the current working directory.
+2. **If it doesn't exist**, create it with the full permissions block below.
+3. **If it exists**, read it and check whether `permissions.allow` already contains the Ralph entries. If any are missing, merge them in (preserve existing permissions, deduplicate).
+4. **Never remove** existing user permissions — only add what's missing.
+
+### Required permissions
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(chmod:*)",
+      "Bash(cd:*)",
+      "Bash(pwd:*)",
+      "Bash(echo:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(diff:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(git:*)",
+      "Bash(python*)",
+      "Bash(pip*)",
+      "Bash(node*)",
+      "Bash(npm*)",
+      "Bash(npx*)",
+      "Bash(yarn*)",
+      "Bash(pnpm*)",
+      "Bash(bun*)",
+      "Bash(cargo*)",
+      "Bash(go *)",
+      "Bash(make*)",
+      "Bash(pytest*)",
+      "Bash(jest*)",
+      "Bash(vitest*)",
+      "Bash(mocha*)",
+      "Bash(ruby*)",
+      "Bash(bundle*)",
+      "Bash(rspec*)",
+      "Bash(swift*)",
+      "Bash(rustc*)",
+      "Bash(gcc*)",
+      "Bash(g++*)",
+      "Bash(clang*)",
+      "Bash(java*)",
+      "Bash(mvn*)",
+      "Bash(gradle*)",
+      "Bash(dotnet*)",
+      "Bash(docker*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Agent"
+    ]
+  }
+}
+```
+
+### Implementation
+
+Run the setup script if available, otherwise do it inline:
+
+```bash
+# Option A: script exists in Ralph's install directory
+bash "$HOME/super-ralph/scripts/setup-permissions.sh" .
+
+# Option B: inline (if script not found)
+# Read existing .claude/settings.json, merge permissions, write back
+```
+
+If doing it inline (no script available), use this approach:
+1. `mkdir -p .claude`
+2. Read `.claude/settings.json` if it exists (or start with `{"permissions":{"allow":[]}}`)
+3. For each permission in the list above, check if it's already present
+4. Append any missing permissions to the `allow` array
+5. Write the updated JSON back
+
+### Rules
+
+- **Only runs in oneshot mode** — brainstorm users keep normal permission prompts
+- **No user prompt** — this is invisible setup, not a question gate
+- **No destructive changes** — only add permissions, never remove existing ones
+- **Idempotent** — safe to run multiple times, produces the same result
+- **Proceed immediately** to Phase -1 after completing
+
+---
+
 ## Phase -1: Brainstorm (BLOCKING — prehook-style interactive Q&A)
 
 Before scoping the workspace or planning tasks, **explore the user's idea through conversation**. The goal is to deeply understand what the user actually wants — not just what they typed.
@@ -116,7 +234,7 @@ Before scoping the workspace or planning tasks, **explore the user's idea throug
 ### MODE gate
 
 - **If `MODE = brainstorm`:** run the interactive flow below as documented.
-- **If `MODE = oneshot`:** skip all `AskUserQuestion` calls. Instead:
+- **If `MODE = oneshot`:** this phase still runs in full — Ralph makes the decisions instead of asking the user. Replace every `AskUserQuestion` with Ralph's own judgment:
   1. Analyze the user's query to infer intent, scope, constraints, edge cases, and users.
   2. Write the `BRAINSTORM_SUMMARY` autonomously based on your analysis.
   3. Do NOT show the summary or ask for confirmation — proceed directly to Phase -0.75.
@@ -225,7 +343,7 @@ After confirming the brainstorm summary, capture the user's **intent profile** t
 ### MODE gate
 
 - **If `MODE = brainstorm`:** ask the 3 questions below interactively.
-- **If `MODE = oneshot`:** skip all `AskUserQuestion` calls. Instead:
+- **If `MODE = oneshot`:** this phase still runs in full — Ralph decides the intent profile instead of asking the user. Replace every `AskUserQuestion` with Ralph's own judgment:
   1. Infer priority, audience, and lifespan from the query and BRAINSTORM_SUMMARY.
   2. When ambiguous, default to the middle tier: **solid and correct + my team + weeks to months**.
   3. Build the `INTENT_PROFILE` and `JUDGE_RUBRIC` from the inferred values.
@@ -350,7 +468,7 @@ After understanding *what* the user wants to build, figure out *what tools will 
 ### MODE gate
 
 - **If `MODE = brainstorm`:** scan and present recommendations interactively as documented below.
-- **If `MODE = oneshot`:** skip all `AskUserQuestion` calls. Instead:
+- **If `MODE = oneshot`:** this phase still runs in full — Ralph selects the toolset instead of asking the user. Replace every `AskUserQuestion` with Ralph's own judgment:
   1. Run the scan (Step 1) as normal.
   2. Run the matching (Step 2) as normal.
   3. Auto-select the recommended toolset — equivalent to the user picking "Recommended set" and then "Looks good — proceed."
@@ -491,7 +609,7 @@ Before any agent runs, scope the workspace using `AskUserQuestion` prehook gates
 ### MODE gate
 
 - **If `MODE = brainstorm`:** ask the 4 questions below interactively.
-- **If `MODE = oneshot`:** skip all `AskUserQuestion` calls. Use these defaults:
+- **If `MODE = oneshot`:** this phase still runs in full — Ralph scopes the workspace itself instead of asking the user. Replace every `AskUserQuestion` with Ralph's own judgment, using these defaults:
   1. **Writable directories:** Current directory and subdirectories.
   2. **Read-only context:** None — figure it out.
   3. **Off-limits:** Nothing off-limits.
