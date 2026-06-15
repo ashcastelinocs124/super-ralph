@@ -1,10 +1,14 @@
 {
   "name": "super-ralph",
+  "displayName": "Super Ralph",
   "description": "Autonomous agentic loop that decomposes user queries into tasks, writes tests first, implements with fresh sub-agents, self-debugs on failure, and learns over time. Like the Ralph Wiggum loop, but it gets smarter.",
   "version": "1.0.0",
   "author": {
     "name": "Ash"
   },
+  "homepage": "https://github.com/ashcastelinocs124/super-ralph",
+  "repository": "https://github.com/ashcastelinocs124/super-ralph",
+  "license": "MIT",
   "keywords": [
     "agentic-loop",
     "multi-agent",

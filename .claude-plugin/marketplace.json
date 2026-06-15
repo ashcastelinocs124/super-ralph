@@ -1,0 +1,24 @@
+{
+  "name": "super-ralph",
+  "owner": {
+    "name": "Ash"
+  },
+  "description": "Marketplace for Super Ralph — the autonomous, self-debugging, learning agentic loop for Claude Code.",
+  "plugins": [
+    {
+      "name": "super-ralph",
+      "source": "./",
+      "description": "Autonomous agentic loop that decomposes user queries into tasks, writes tests first, implements with fresh sub-agents, self-debugs on failure, and learns over time. Ships the super-ralph skill, /ralph and /super-ralph commands, and all ralph-* agents.",
+      "category": "workflow",
+      "keywords": [
+        "agentic-loop",
+        "multi-agent",
+        "test-driven",
+        "self-debugging",
+        "learning",
+        "task-decomposition",
+        "autonomous"
+      ]
+    }
+  ]
+}

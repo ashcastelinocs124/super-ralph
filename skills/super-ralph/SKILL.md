@@ -26,33 +26,41 @@ If this file says "use AskUserQuestion," treat that as "single interactive quest
 ```
 User Query
   → Mode Selection: oneshot (fully autonomous) or brainstorm (interactive) — single AskUserQuestion
-  → IF oneshot: Permissions Bootstrap — auto-configure .claude/settings.json so sub-agents never prompt
+  → Environment Detection: detect AI runtime (Claude/Codex) + coding environment → AI_ENVIRONMENT + CODING_ENVIRONMENT + MODEL_CONFIG
+  → IF oneshot: Permissions Bootstrap — auto-configure settings file so sub-agents never prompt
   → IF brainstorm: interactive Q&A to explore intent, scope, edge cases (AskUserQuestion loop)
   → IF oneshot: auto-analyze query, infer intent/scope/constraints, write BRAINSTORM_SUMMARY silently
   → Intent Profile: 3 questions or auto-infer (based on MODE) → JUDGE_RUBRIC
   → Tooling: scan skills/agents, recommend or auto-select (based on MODE) → TOOLING_CONFIG
   → Pre-Flight: scope workspace + set MAX_RETRIES (interactive or defaults based on MODE)
-  → Decompose: orchestrator breaks query into tasks directly (no separate manager/planner agent)
+  → Decompose: orchestrator breaks query into tasks directly; tags each with complexity + model_tier
   → Per Task (parallel if independent — never use run_in_background):
-      → ralph-tester: write tests → JUDGE: pass? → retry tester if fail
-      → ralph-worker: implement → JUDGE: pass? → retry worker if fail → run tests
-      → Fail MAX_RETRIES/2? → debug.md → ralph-debugger → JUDGE: pass? → fresh ralph-worker
+      → ralph-tester-lightweight: write tests → JUDGE: pass? → retry tester if fail
+      → ralph-worker[-lightweight]: implement → JUDGE: pass? → retry worker if fail → run tests
+      → Fail MAX_RETRIES/2? → debug.md → ralph-debugger[-lightweight] → JUDGE: pass? → fresh ralph-worker[-lightweight]
       → Fail MAX_RETRIES? → auto-skip + log to learnings
       → Pass → clear debug.md
-  → ralph-merger: combine outputs → JUDGE: pass? → retry merger if fail → deliver
+  → ralph-merger[-lightweight]: combine outputs → JUDGE: pass? → retry merger if fail → deliver
 ```
 
 ## Agents
 
 | Agent | File | Role |
 |-------|------|------|
-| ralph-tester | `agents/ralph-tester.md` | Writes strict tests before implementation |
-| ralph-worker | `agents/ralph-worker.md` | Implements until tests pass, writes debug.md on attempt 3 |
-| ralph-debugger | `agents/ralph-debugger.md` | Cold analysis of failures, writes fix plan |
-| ralph-judge | `agents/ralph-judge.md` | Universal quality gate — evaluates every sub-agent's output against task criteria |
-| ralph-merger | `agents/ralph-merger.md` | Combines outputs into cohesive deliverable |
+| ralph-tester | `agents/ralph-tester.md` | Standard test-first agent (standard / `opus`) — kept for fallback |
+| ralph-tester-lightweight | `agents/ralph-tester-lightweight.md` | Default test-first agent — used for **all** tasks (`sonnet`) |
+| ralph-worker | `agents/ralph-worker.md` | Implements until tests pass, writes debug.md on attempt 3 (standard / `opus`) |
+| ralph-worker-lightweight | `agents/ralph-worker-lightweight.md` | Same role, uses `sonnet` for simple tasks |
+| ralph-debugger | `agents/ralph-debugger.md` | Cold analysis of failures, writes fix plan (standard / `opus`) |
+| ralph-debugger-lightweight | `agents/ralph-debugger-lightweight.md` | Same role, uses `sonnet` for simple tasks |
+| ralph-judge | `agents/ralph-judge.md` | Universal quality gate — evaluates every sub-agent output (standard / `opus`) |
+| ralph-judge-lightweight | `agents/ralph-judge-lightweight.md` | Same role, uses `sonnet` for simple tasks |
+| ralph-merger | `agents/ralph-merger.md` | Combines outputs into cohesive deliverable (standard / `opus`) |
+| ralph-merger-lightweight | `agents/ralph-merger-lightweight.md` | Same role, uses `sonnet` for simple tasks |
 
 **Note:** Planning/decomposition is handled directly by the orchestrator (this skill), not a separate manager or planner agent. The orchestrator already has the brainstorm summary, tooling config, learnings, and codebase context, so an extra control layer would just duplicate work.
+
+**Model selection:** The orchestrator detects the AI environment (Claude vs Codex) and the coding environment, then assigns each task a complexity tier. The **tester is always dispatched as `ralph-tester-lightweight`**; worker/judge/debugger/merger use `-lightweight` for simple tasks and standard agents for medium/complex tasks.
 
 **Note:** The ralph-judge agent evaluates every sub-agent's output before the loop continues. If the judge rejects, the same agent is retried with the judge's specific feedback. There is no retry limit on judge rejections — the agent keeps retrying until the judge passes. Each retry is a fresh agent with zero prior context.
 
@@ -118,15 +126,108 @@ When `MODE = oneshot`, the orchestrator makes these decisions autonomously inste
 
 ---
 
+## Phase -2.5: Environment Detection (silent, runs immediately after mode selection)
+
+Before setting up permissions or brainstorming, detect the runtime environment so Ralph can choose the right model tier and tooling expectations. This phase is fully autonomous — no user questions.
+
+### Step 1: Detect the AI environment
+
+Determine whether this session is running in **Claude Code** or **Codex** (or another compatible environment). Use the first match from these probes:
+
+```bash
+# Probe 1: Codex-specific paths / env
+[ -d "$HOME/.codex" ] || [ -d ".codex" ] || [ -n "${CODEX_ENV:-}" ] || [ -f ".codex/settings.json" ] && ENV_HINT=codex
+
+# Probe 2: Claude-specific paths / env
+[ -d "$HOME/.claude" ] || [ -d ".claude" ] || [ -n "${CLAUDE_CODE_ENV:-}" ] || [ -f ".claude/settings.json" ] && ENV_HINT=claude
+```
+
+Set `AI_ENVIRONMENT`:
+- **codex** — if any Codex-specific probe matched first.
+- **claude** — if Claude-specific probes matched and no Codex probe matched.
+- **claude** — default fallback if neither matched (Claude-first project).
+
+> Additive Codex note: In Codex, the probes above may not be available. The orchestrator should still run the same logic; if it cannot determine the environment, default to `claude` model names and let the Codex runtime map them to its own equivalents, or use the Codex-native model names configured by the user.
+
+### Step 2: Detect the coding environment
+
+Scan the current workspace to identify the project's language, framework, and available tooling. This feeds `CODING_ENVIRONMENT` into task decomposition and model selection.
+
+Run these probes (first match wins within each category):
+
+```bash
+# Languages / package managers
+find . -maxdepth 2 \( -name "pyproject.toml" -o -name "requirements.txt" -o -name "setup.py" -o -name "Pipfile" \) -print -quit
+find . -maxdepth 2 \( -name "package.json" -o -name "package-lock.json" -o -name "yarn.lock" -o -name "pnpm-lock.yaml" -o -name "bun.lockb" \) -print -quit
+find . -maxdepth 2 \( -name "Cargo.toml" \) -print -quit
+find . -maxdepth 2 \( -name "go.mod" \) -print -quit
+find . -maxdepth 2 \( -name "pom.xml" -o -name "build.gradle" -o -name "build.gradle.kts" \) -print -quit
+find . -maxdepth 2 \( -name "Gemfile" \) -print -quit
+find . -maxdepth 2 \( -name "composer.json" \) -print -quit
+
+# Test runners / build tools (look in common config files)
+grep -E "pytest|unittest|jest|vitest|mocha|rspec|cargo test|go test|gradle|mvn" pyproject.toml package.json Cargo.toml go.mod 2>/dev/null || true
+```
+
+Store the result as `CODING_ENVIRONMENT`:
+
+```markdown
+## Coding Environment
+
+**AI Environment:** [claude | codex]
+**Primary Language:** [python | javascript/typescript | rust | go | java | ruby | php | unknown]
+**Framework / Runtime:** [django | fastapi | react | node | etc. — or unknown]
+**Test Runner:** [pytest | jest | vitest | cargo test | go test | etc. — or unknown]
+**Package Manager:** [pip | npm | yarn | pnpm | cargo | etc. — or unknown]
+**Build Tool:** [make | webpack | vite | gradle | maven | etc. — or none]
+```
+
+Use `CODING_ENVIRONMENT` to:
+- Pick realistic test commands during decomposition.
+- Infer the right framework conventions for ralph-worker.
+- Influence the `skills_to_use` tag (e.g., tag `doc-search` when third-party APIs are likely).
+
+### Step 3: Build `MODEL_CONFIG`
+
+Based on `AI_ENVIRONMENT`, define the available model tiers. This config is used during task decomposition to tag each task with the right agent variant.
+
+```markdown
+## Model Config
+
+**AI Environment:** [claude | codex]
+**Standard model (complex tasks / quality gates):** opus
+**Lightweight model (simple tasks):** sonnet
+**Fastest model (trivial tasks, optional):** haiku
+```
+
+Environment-specific mappings:
+
+| AI Environment | Standard | Lightweight | Fastest |
+|----------------|----------|-------------|---------|
+| Claude         | `opus`   | `sonnet`    | `haiku` |
+| Codex          | Use Codex default / strongest available | Use Codex fast/cheap model | Use Codex lightest available |
+
+> The `standard` tier is used for complex tasks and for agents that act as quality gates (ralph-judge, ralph-debugger) when the task is not trivial. The `lightweight` tier is used for simple tasks across all agent roles. The `fastest` tier is optional — only use it for tasks that are truly trivial (one-line change, config tweak, typo fix) and only if the environment supports it.
+
+Store `MODEL_CONFIG` and proceed to Phase -1.5 (Permissions Bootstrap) or Phase -1 (Brainstorm) depending on MODE.
+
+---
+
 ## Phase -1.5: Permissions Bootstrap (ONESHOT ONLY — silent, runs immediately after mode selection)
 
 **This phase only runs when `MODE = oneshot`.** If `MODE = brainstorm`, skip this entirely — the user keeps normal Claude Code permission prompts.
 
-When running in oneshot mode, sub-agents need to execute without blocking on tool approval prompts. This phase auto-configures the project's `.claude/settings.json` so every tool Ralph's agents use is pre-approved.
+When running in oneshot mode, sub-agents need to execute without blocking on tool approval prompts. This phase auto-configures the project's settings file so every tool Ralph's agents use is pre-approved.
+
+Use the settings path that matches `AI_ENVIRONMENT`:
+- **Claude:** `.claude/settings.json`
+- **Codex:** `.codex/settings.json` (if Codex uses a comparable settings file)
+
+If the environment cannot be determined, default to `.claude/settings.json`.
 
 ### How it works
 
-1. **Check** if `.claude/settings.json` exists in the current working directory.
+1. **Check** if the environment-appropriate settings file exists in the current working directory.
 2. **If it doesn't exist**, create it with the full permissions block below.
 3. **If it exists**, read it and check whether `permissions.allow` already contains the Ralph entries. If any are missing, merge them in (preserve existing permissions, deduplicate).
 4. **Never remove** existing user permissions — only add what's missing.
@@ -207,15 +308,16 @@ Run the setup script if available, otherwise do it inline:
 bash "$HOME/super-ralph/scripts/setup-permissions.sh" .
 
 # Option B: inline (if script not found)
-# Read existing .claude/settings.json, merge permissions, write back
+# Read existing {claude|.claude|.codex}/settings.json, merge permissions, write back
 ```
 
 If doing it inline (no script available), use this approach:
-1. `mkdir -p .claude`
-2. Read `.claude/settings.json` if it exists (or start with `{"permissions":{"allow":[]}}`)
-3. For each permission in the list above, check if it's already present
-4. Append any missing permissions to the `allow` array
-5. Write the updated JSON back
+1. Determine the settings directory from `AI_ENVIRONMENT` (`.claude` for Claude, `.codex` for Codex)
+2. `mkdir -p <settings-dir>`
+3. Read `<settings-dir>/settings.json` if it exists (or start with `{"permissions":{"allow":[]}}`)
+4. For each permission in the list above, check if it's already present
+5. Append any missing permissions to the `allow` array
+6. Write the updated JSON back
 
 ### Rules
 
@@ -728,10 +830,36 @@ Output a JSON task array:
     ],
     "dependencies": [],
     "test_strategy": "What tests to write, what to assert, what framework to use",
-    "skills_to_use": ["skill-name — when and why to invoke it during this task"]
+    "skills_to_use": ["skill-name — when and why to invoke it during this task"],
+    "complexity": "simple | medium | complex",
+    "model_tier": "lightweight | standard"
   }
 ]
 ```
+
+### Step 2a: Assess task complexity and assign model tier
+
+For each task, assign a `complexity` and `model_tier` before dispatching. Use these heuristics:
+
+| Complexity | Signals | Model Tier | Example |
+|------------|---------|------------|---------|
+| **simple** | Single file or function; no external dependencies/APIs; well-defined success criteria; low ambiguity; no complex architecture or state | `lightweight` | Add `.gitignore`, fix a typo, add a small pure helper, update a config value |
+| **medium** | Multiple files or moderate logic; some internal dependencies; clear criteria but requires reasoning about existing code | `standard` | Refactor a module, add an endpoint with validation, implement a small feature |
+| **complex** | Cross-cutting changes; external APIs; concurrency/security concerns; significant architecture; high ambiguity | `standard` | Build auth system, design new service, implement distributed rate limiter |
+
+**Model tier mapping by role:**
+
+| Agent | Simple task (`lightweight`) | Medium / Complex task (`standard`) |
+|-------|-----------------------------|-------------------------------------|
+| ralph-tester | `ralph-tester-lightweight` | `ralph-tester-lightweight` *(tester is always lightweight)* |
+| ralph-worker | `ralph-worker-lightweight` | `ralph-worker` |
+| ralph-judge | `ralph-judge-lightweight` | `ralph-judge` |
+| ralph-debugger | `ralph-debugger-lightweight` | `ralph-debugger` |
+| ralph-merger | `ralph-merger-lightweight` | `ralph-merger` |
+
+**Combination rule:** Within a single run, simple tasks dispatch lightweight agents while complex tasks dispatch standard agents. This is the "combination of models" — Ralph does not default every agent to opus. Quality gates (judge/debugger) for simple tasks still use the lightweight tier because the task itself is simple; only escalate to standard if the task complexity warrants it.
+
+**Escalation rule:** If a lightweight agent other than the tester fails the judge gate repeatedly (more than 2 judge rejections) on a `simple` task, re-dispatch that step using the `standard` agent. The task complexity estimate may have been wrong. The tester never escalates — it stays `ralph-tester-lightweight` regardless of rejections.
 
 ### Quality rules for decomposition
 
@@ -751,6 +879,14 @@ mkdir -p workspace/task-{id}/tests workspace/task-{id}/output
 ### Step 4: Dispatch tasks
 
 Dispatch independent tasks **in parallel** by making multiple Agent tool calls in a single message. Tasks with dependencies wait for their dependencies to complete first. **Never use `run_in_background: true`** — instead, dispatch multiple foreground agents concurrently. In Codex, use multiple foreground sessions/agents in parallel for independent tasks.
+
+When dispatching an agent, use the agent variant that matches the task's `model_tier`, with one exception:
+- **ralph-tester is always dispatched as `ralph-tester-lightweight`** regardless of task complexity.
+- For all other agents:
+  - `lightweight` → dispatch `ralph-worker-lightweight`, `ralph-judge-lightweight`, etc.
+  - `standard` → dispatch `ralph-worker`, `ralph-judge`, etc.
+
+This lets Ralph run a combination of models in parallel: the tester is always lightweight, while worker/judge/debugger/merger scale with task complexity.
 
 ---
 
@@ -772,19 +908,22 @@ For each task from the orchestrator. **Parallelize independent tasks** by dispat
 
 ```
 while true:
-    Dispatch ralph-tester with: task definition + WORKSPACE_RULES
+    Dispatch `ralph-tester-lightweight` with: task definition + WORKSPACE_RULES
       + ralph-tester-learnings.md (agent-specific learnings from past runs)
 
     Tester writes tests to workspace/task-{id}/tests/ and reports the test command.
 
-    Dispatch ralph-judge with:
+    Dispatch the appropriate judge agent based on task.model_tier:
+      - `lightweight` → `ralph-judge-lightweight`
+      - `standard` → `ralph-judge`
+    with:
       agent_type: "tester"
       task definition + output location (workspace/task-{id}/tests/) + JUDGE_RUBRIC + WORKSPACE_RULES
 
     if judge passes:
         break → proceed to Step 2b
     else:
-        Dispatch fresh ralph-tester with:
+        Dispatch fresh `ralph-tester-lightweight` with:
           original prompt + "JUDGE REJECTED YOUR PREVIOUS OUTPUT:\n{judge_verdict}\nFix these issues."
         (loop until judge passes — no retry limit)
 ```
@@ -806,23 +945,31 @@ while true:
     if attempt == debug_trigger:
         Add to prompt: "This is attempt {debug_trigger}. You MUST write debug.md before exiting."
 
-    Dispatch fresh ralph-worker with:
+    Dispatch the appropriate worker agent based on task.model_tier:
+      - `lightweight` → `ralph-worker-lightweight`
+      - `standard` → `ralph-worker`
+    with:
       task definition + test locations + failure_context + TOOLING_CONFIG + WORKSPACE_RULES
       + ralph-worker-learnings.md (agent-specific learnings from past runs)
       + PREREQUISITE_LEARNINGS (if task has dependencies — from completed prerequisite tasks)
 
     # ── Judge gate (runs BEFORE tests) ──────────────────────────
     while true:
-        Dispatch ralph-judge with:
+        Dispatch the appropriate judge agent based on task.model_tier:
+          - `lightweight` → `ralph-judge-lightweight`
+          - `standard` → `ralph-judge`
+        with:
           agent_type: "worker"
           task definition + output location (workspace/task-{id}/output/) + JUDGE_RUBRIC + WORKSPACE_RULES
 
         if judge passes:
             break → proceed to test validation
         else:
-            Dispatch fresh ralph-worker with:
+            Dispatch fresh worker agent (same model_tier variant) with:
               original prompt + "JUDGE REJECTED YOUR PREVIOUS OUTPUT:\n{judge_verdict}\nFix these issues."
             (loop until judge passes — no retry limit)
+
+        **Escalation:** If a lightweight worker is rejected more than twice, re-dispatch using the standard `ralph-worker` for that task.
 
     # ── Test validation (runs AFTER judge passes) ───────────────
     Run tests via Bash: {test_command}
@@ -866,10 +1013,10 @@ Immediately after a task passes all tests, the orchestrator writes a learnings e
 
 ### Step 2e: Inject Learnings into Dependent Tasks
 
-When dispatching a task that has dependencies, include the learnings from completed prerequisite tasks in the prompt:
+When dispatching a task that has dependencies, include the learnings from completed prerequisite tasks in the prompt. The tester is always `ralph-tester-lightweight`; use the worker variant based on the dependent task's `model_tier`:
 
 ```
-Dispatch ralph-tester/worker with:
+Dispatch ralph-tester-lightweight + ralph-worker-lightweight/worker with:
   task definition + WORKSPACE_RULES + ...
   + PREREQUISITE_LEARNINGS:
     "Task 1 (Auth endpoint) learned:
@@ -890,24 +1037,35 @@ The worker at attempt `MAX_RETRIES/2` writes `debug.md` with all attempts so far
 
 ```
 while true:
-    Dispatch ralph-debugger with: debug.md + task definition + WORKSPACE_RULES
+    Dispatch the appropriate debugger agent based on task.model_tier:
+      - `lightweight` → `ralph-debugger-lightweight`
+      - `standard` → `ralph-debugger`
+    with: debug.md + task definition + WORKSPACE_RULES
       + ralph-debugger-learnings.md (agent-specific learnings from past runs)
     Debugger reads debug.md cold, identifies root cause, appends fix plan.
 
-    Dispatch ralph-judge with:
+    Dispatch the appropriate judge agent based on task.model_tier:
+      - `lightweight` → `ralph-judge-lightweight`
+      - `standard` → `ralph-judge`
+    with:
       agent_type: "debugger"
       task definition + debug.md + JUDGE_RUBRIC + WORKSPACE_RULES
 
     if judge passes:
         break → proceed to Step 3
     else:
-        Dispatch fresh ralph-debugger with:
+        Dispatch fresh debugger agent (same model_tier variant) with:
           original prompt + "JUDGE REJECTED YOUR FIX PLAN:\n{judge_verdict}\nRevise it."
         (loop until judge passes — no retry limit)
+
+    **Escalation:** If a lightweight debugger is rejected more than twice, re-dispatch using the standard `ralph-debugger` for that task.
 ```
 
 ### Step 3: Fresh Worker follows fix plan (with judge gate)
-Dispatch fresh **ralph-worker** (attempts `MAX_RETRIES/2 + 1` through `MAX_RETRIES`) with debug.md. Worker follows the fix plan exactly.
+Dispatch the appropriate fresh worker agent based on task.model_tier:
+- `lightweight` → `ralph-worker-lightweight`
+- `standard` → `ralph-worker`
+(attempts `MAX_RETRIES/2 + 1` through `MAX_RETRIES`) with debug.md. Worker follows the fix plan exactly.
 
 The worker's output goes through the same judge gate as Step 2b (judge must pass before tests run).
 
@@ -928,8 +1086,11 @@ Run tests again:
 
 ## Phase 3: Merge, Learn & Deliver
 
-After ALL tasks complete, dispatch **ralph-merger** in the **foreground** (never background) with:
-- All task titles, statuses, attempt counts, and output directories
+After ALL tasks complete, dispatch the appropriate merger agent:
+- If **all** tasks were `lightweight` → `ralph-merger-lightweight`
+- If **any** task was `standard` → `ralph-merger`
+in the **foreground** (never background) with:
+- All task titles, statuses, attempt counts, model tiers, and output directories
 - Per-task notes: what worked, what failed, debug insights (passed in prompt, not in learnings.md)
 - WORKSPACE_RULES
 
@@ -937,18 +1098,21 @@ After ALL tasks complete, dispatch **ralph-merger** in the **foreground** (never
 
 ```
 while true:
-    Dispatch ralph-merger with: task outputs + notes + WORKSPACE_RULES
+    Dispatch the appropriate merger agent (same rule as above) with: task outputs + notes + WORKSPACE_RULES
 
     Merger combines outputs into workspace/final/, resolves integration issues.
 
-    Dispatch ralph-judge with:
+    Dispatch the appropriate judge agent:
+    - If **all** tasks were `lightweight` → `ralph-judge-lightweight`
+    - If **any** task was `standard` → `ralph-judge`
+    with:
       agent_type: "merger"
       task definitions + output location (workspace/final/) + JUDGE_RUBRIC + WORKSPACE_RULES
 
     if judge passes:
         break → proceed to Step 3b
     else:
-        Dispatch fresh ralph-merger with:
+        Dispatch fresh merger agent (same model tier) with:
           original prompt + "JUDGE REJECTED YOUR DELIVERABLE:\n{judge_verdict}\nFix these issues."
         (loop until judge passes — no retry limit)
 ```

@@ -9,6 +9,7 @@ secrets.*
 
 # Local config
 .claude/settings.local.json
+.codex/settings.local.json
 
 # Internal working files
 CLAUDE.md

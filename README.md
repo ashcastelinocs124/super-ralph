@@ -20,16 +20,18 @@ You: "/super-ralph build me a REST API with auth and rate limiting"
 
 Super Ralph:
   0. Mode       ── oneshot or brainstorm? (only difference: who decides — Ralph or you)
-  1. Brainstorm  ── explore intent, scope, edge cases (user decides in brainstorm, Ralph decides in oneshot)
-  2. Intent      ── priority, audience, lifespan → shapes judge strictness (always runs)
-  3. Tooling     ── scans skills/agents, selects toolset (always runs)
-  4. Pre-Flight  ── workspace scope + retry limit (always runs)
-  5. Plan       ── decomposes query into independent tasks with high quality bar
-  6. Per Task   ── test agent writes strict tests → worker implements → tests validate
-  7. Debug      ── if stuck at halfway mark, writes debug.md → fresh debugger analyzes cold → retry
-  8. Learn      ── every outcome (pass or fail) logged to learnings.md
-  9. Merge      ── combines all task outputs into one cohesive deliverable
-  10. Deliver   ── summary report + merged output in workspace/final/
+  1. Environment ── detects AI runtime (Claude/Codex) and coding environment (language, framework, tools)
+  2. Brainstorm  ── explore intent, scope, edge cases (user decides in brainstorm, Ralph decides in oneshot)
+  3. Intent      ── priority, audience, lifespan → shapes judge strictness (always runs)
+  4. Tooling     ── scans skills/agents, selects toolset (always runs)
+  5. Pre-Flight  ── workspace scope + retry limit (always runs)
+  6. Plan       ── decomposes query into independent tasks; tags each with complexity + model tier
+  7. Per Task   ── test agent (always lightweight `sonnet`) writes strict tests → worker implements → tests validate
+                  (simple tasks use lightweight `sonnet` agents; complex tasks use standard `opus` agents)
+  8. Debug      ── if stuck at halfway mark, writes debug.md → fresh debugger analyzes cold → retry
+  9. Learn      ── every outcome (pass or fail) logged to learnings.md
+  10. Merge      ── combines all task outputs into one cohesive deliverable
+  11. Deliver   ── summary report + merged output in workspace/final/
 ```
 
 Both modes run the **identical pipeline** — brainstorm, intent, tooling, pre-flight, plan, execute, debug, learn, merge. In oneshot, Ralph makes every decision; in brainstorm, you do. After setup, the execution loop is fully autonomous either way. Failed tasks are auto-skipped and logged. No escalations, no confirmations, no interruptions.
@@ -66,11 +68,64 @@ Super Ralph uses 5 specialized sub-agents, each dispatched as a fresh process wi
 
 | Agent | Type | Role |
 |-------|------|------|
-| **ralph-tester** | `opus` | Writes adversarial tests before any implementation exists. Covers happy path, edge cases, and failure modes. All tests runnable with a single command. |
+| **ralph-tester** | `opus` | Standard adversarial test-first agent. Kept for fallback / escalation. |
+| **ralph-tester-lightweight** | `sonnet` | Default test agent — used for **all** tasks regardless of complexity. |
 | **ralph-judge** | `opus` | Universal quality gate. Evaluates every sub-agent's output against the task definition's quality standard, success criteria, and anti-patterns. Returns PASS or FAIL with specific feedback. No retry limit — agents keep going until the judge is satisfied. |
+| **ralph-judge-lightweight** | `sonnet` | Lightweight variant of ralph-judge. Used for simple, well-defined tasks. |
 | **ralph-worker** | `opus` | Reads tests first, then implements production-grade code. On retries, gets failure context. At the debug trigger, writes `debug.md` with full reasoning trail. |
+| **ralph-worker-lightweight** | `sonnet` | Lightweight variant of ralph-worker. Used for simple, well-defined tasks. |
 | **ralph-debugger** | `opus` | Cold failure analyst. Reads `debug.md` with zero bias. Identifies the shared wrong assumption across all failed attempts. Writes a concrete, step-by-step fix plan. |
+| **ralph-debugger-lightweight** | `sonnet` | Lightweight variant of ralph-debugger. Used for simple, well-defined tasks. |
 | **ralph-merger** | `opus` | Combines independently-built task outputs into one cohesive deliverable. Resolves import conflicts, naming collisions, and missing glue code. Produces summary report. |
+| **ralph-merger-lightweight** | `sonnet` | Lightweight variant of ralph-merger. Used when all tasks in the run are simple. |
+
+---
+
+## Environment Detection & Model Selection
+
+Super Ralph inspects the runtime before it plans work so it can use the right tools and the right model for each task.
+
+### AI Environment Detection
+
+Ralph detects whether it is running in **Claude Code** or **Codex** by probing for environment-specific paths and settings:
+
+```bash
+# Codex probes
+[ -d "$HOME/.codex" ] || [ -d ".codex" ] || [ -n "${CODEX_ENV:-}" ] || [ -f ".codex/settings.json" ]
+
+# Claude probes
+[ -d "$HOME/.claude" ] || [ -d ".claude" ] || [ -n "${CLAUDE_CODE_ENV:-}" ] || [ -f ".claude/settings.json" ]
+```
+
+The first match wins; if neither matches, Ralph defaults to Claude (Claude-first project). This detection is fully autonomous — no user questions.
+
+### Coding Environment Detection
+
+Ralph scans the workspace to identify the project's language, framework, test runner, package manager, and build tools. It looks for files like `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, `Gemfile`, etc. This feeds into task decomposition and tooling recommendations.
+
+### Model Selection
+
+Each decomposed task is assigned a **complexity** (`simple`, `medium`, or `complex`) and a **model tier** (`lightweight` or `standard`).
+
+| Complexity | Signals | Model Tier | Example |
+|------------|---------|------------|---------|
+| **simple** | Single file/function; no external deps; low ambiguity | `lightweight` | Add `.gitignore`, fix a typo, add a pure helper |
+| **medium** | Multiple files; moderate logic; clear criteria | `standard` | Refactor a module, add a validated endpoint |
+| **complex** | Cross-cutting; external APIs; security/concurrency | `standard` | Auth system, distributed rate limiter |
+
+**Model tier mapping (Claude):**
+
+| Agent | Simple task | Medium / Complex task |
+|-------|-------------|----------------------|
+| ralph-tester | `sonnet` | `sonnet` *(always lightweight)* |
+| ralph-worker | `sonnet` | `opus` |
+| ralph-judge | `sonnet` | `opus` |
+| ralph-debugger | `sonnet` | `opus` |
+| ralph-merger | `sonnet` | `opus` |
+
+**Combination of models:** The tester is always lightweight. Worker, judge, debugger, and merger dispatch `sonnet` for simple tasks and `opus` for medium/complex tasks. This runs in parallel, so Ralph does not waste heavy model capacity on trivial work. If a lightweight agent (other than the tester) repeatedly fails the judge gate, Ralph escalates that step to the standard model.
+
+> Additive Codex note: In Codex environments, the same tier logic applies (`lightweight` vs `standard`), mapped to the Codex-native model names configured by the user.
 
 ---
 
@@ -347,6 +402,26 @@ Just say "ralph this" or "break this down and build it" in any conversation.
 
 ## Install
 
+### As a Claude Code plugin (recommended)
+
+Super Ralph ships as a Claude Code plugin with its own marketplace, so you can install it without cloning. In Claude Code:
+
+```
+/plugin marketplace add ashcastelinocs124/super-ralph
+/plugin install super-ralph@super-ralph
+```
+
+This registers the `super-ralph` skill, both slash commands (`/ralph` and `/super-ralph`), and all `ralph-*` agents. Then type `/ralph build me a REST API`.
+
+To update or remove later:
+
+```
+/plugin marketplace update super-ralph
+/plugin uninstall super-ralph@super-ralph
+```
+
+### Via install script
+
 ```bash
 git clone https://github.com/ashcastelinocs124/super-ralph.git ~/super-ralph && bash ~/super-ralph/install.sh
 ```
@@ -390,11 +465,16 @@ super-ralph/
     super-ralph/
       SKILL.md               # Orchestrator — the full loop logic
   agents/
-    ralph-tester.md          # Adversarial test-first agent
-    ralph-judge.md           # Universal quality gate — evaluates all sub-agent output
-    ralph-worker.md          # Implementation agent with retry + debug.md
-    ralph-debugger.md        # Cold failure analysis agent
-    ralph-merger.md          # Integration and merge agent
+    ralph-tester.md                  # Adversarial test-first agent (opus)
+    ralph-tester-lightweight.md      # Lightweight test-first agent (sonnet)
+    ralph-judge.md                   # Universal quality gate — evaluates all sub-agent output (opus)
+    ralph-judge-lightweight.md       # Lightweight quality gate (sonnet)
+    ralph-worker.md                  # Implementation agent with retry + debug.md (opus)
+    ralph-worker-lightweight.md      # Lightweight implementation agent (sonnet)
+    ralph-debugger.md                # Cold failure analysis agent (opus)
+    ralph-debugger-lightweight.md    # Lightweight failure analysis agent (sonnet)
+    ralph-merger.md                  # Integration and merge agent (opus)
+    ralph-merger-lightweight.md      # Lightweight integration agent (sonnet)
   install.sh                 # One-command installer — links everything into Claude Code
   uninstall.sh               # Clean removal
   scripts/
